@@ -1,0 +1,238 @@
+# E-Commerce Semantic Layer Definition
+# Defines semantic models and metrics for e-commerce analytics
+
+semantic_models:
+  - name: orders
+    description: "Order transactions from the e-commerce platform"
+    table: orders
+    primary_entity: order_id
+
+    entities:
+      - name: order_id
+        type: primary
+      - name: customer_id
+        type: foreign
+        expr: customer_id
+      - name: product_id
+        type: foreign
+        expr: product_id
+
+    measures:
+      - name: order_amount
+        agg: sum
+        expr: amount
+        description: "Total order amount in USD"
+
+      - name: order_count
+        agg: count
+        expr: order_id
+        description: "Count of orders"
+
+      - name: unique_customers
+        agg: count_distinct
+        expr: customer_id
+        description: "Distinct customer count"
+
+      - name: item_quantity
+        agg: sum
+        expr: quantity
+        description: "Total items sold"
+
+    dimensions:
+      - name: order_date
+        type: time
+        expr: order_date
+        time_granularity: day
+        description: "Date the order was placed"
+
+      - name: order_status
+        type: categorical
+        expr: status
+        description: "Order status (pending, completed, cancelled)"
+
+      - name: country
+        type: categorical
+        expr: country
+        description: "Customer shipping country"
+
+      - name: product_category
+        type: categorical
+        expr: category
+        description: "Product category"
+
+      - name: payment_method
+        type: categorical
+        expr: payment_method
+        description: "Payment method used"
+
+  - name: sessions
+    description: "Website session data"
+    table: sessions
+    primary_entity: session_id
+
+    entities:
+      - name: session_id
+        type: primary
+      - name: user_id
+        type: foreign
+        expr: user_id
+
+    measures:
+      - name: session_count
+        agg: count
+        expr: session_id
+        description: "Count of sessions"
+
+      - name: page_views
+        agg: sum
+        expr: page_view_count
+        description: "Total page views"
+
+      - name: unique_visitors
+        agg: count_distinct
+        expr: user_id
+        description: "Unique visitors"
+
+    dimensions:
+      - name: session_date
+        type: time
+        expr: session_date
+        time_granularity: day
+        description: "Date of the session"
+
+      - name: traffic_source
+        type: categorical
+        expr: traffic_source
+        description: "Traffic source (organic, paid, social, etc.)"
+
+      - name: device_type
+        type: categorical
+        expr: device_type
+        description: "Device type (desktop, mobile, tablet)"
+
+metrics:
+  # Simple Metrics - direct aggregation of a measure
+  - name: revenue
+    description: "Total revenue from completed orders"
+    type: simple
+    type_params:
+      measure: order_amount
+    filter: "status = 'completed'"
+
+  - name: total_orders
+    description: "Total number of orders"
+    type: simple
+    type_params:
+      measure: order_count
+
+  - name: completed_orders
+    description: "Number of completed orders"
+    type: simple
+    type_params:
+      measure: order_count
+    filter: "status = 'completed'"
+
+  - name: cancelled_orders
+    description: "Number of cancelled orders"
+    type: simple
+    type_params:
+      measure: order_count
+    filter: "status = 'cancelled'"
+
+  - name: customer_count
+    description: "Number of unique customers"
+    type: simple
+    type_params:
+      measure: unique_customers
+
+  - name: items_sold
+    description: "Total number of items sold"
+    type: simple
+    type_params:
+      measure: item_quantity
+    filter: "status = 'completed'"
+
+  - name: total_sessions
+    description: "Total number of sessions"
+    type: simple
+    type_params:
+      measure: session_count
+
+  - name: total_page_views
+    description: "Total page views"
+    type: simple
+    type_params:
+      measure: page_views
+
+  - name: visitors
+    description: "Unique visitors"
+    type: simple
+    type_params:
+      measure: unique_visitors
+
+  # Derived Metrics - calculations using other metrics
+  - name: average_order_value
+    description: "Average revenue per completed order"
+    type: derived
+    type_params:
+      expr: "revenue / completed_orders"
+      metrics:
+        - revenue
+        - completed_orders
+
+  - name: revenue_per_customer
+    description: "Average revenue per unique customer"
+    type: derived
+    type_params:
+      expr: "revenue / customer_count"
+      metrics:
+        - revenue
+        - customer_count
+
+  - name: items_per_order
+    description: "Average items per order"
+    type: derived
+    type_params:
+      expr: "items_sold / completed_orders"
+      metrics:
+        - items_sold
+        - completed_orders
+
+  - name: pages_per_session
+    description: "Average pages viewed per session"
+    type: derived
+    type_params:
+      expr: "total_page_views / total_sessions"
+      metrics:
+        - total_page_views
+        - total_sessions
+
+  # Ratio Metrics - explicit numerator/denominator
+  - name: order_completion_rate
+    description: "Percentage of orders that complete"
+    type: ratio
+    type_params:
+      numerator: completed_orders
+      denominator: total_orders
+
+  - name: cancellation_rate
+    description: "Percentage of orders that are cancelled"
+    type: ratio
+    type_params:
+      numerator: cancelled_orders
+      denominator: total_orders
+
+  # Cumulative Metrics - running totals
+  - name: cumulative_revenue
+    description: "Running total of revenue"
+    type: cumulative
+    type_params:
+      measure: order_amount
+    filter: "status = 'completed'"
+
+  - name: cumulative_orders
+    description: "Running total of orders"
+    type: cumulative
+    type_params:
+      measure: order_count
+    filter: "status = 'completed'"
