@@ -19,3 +19,4 @@ data/*.duckdb
 .idea/
 .vscode/
 *.swp
+.coverage
