@@ -69,6 +69,15 @@ class SQLCompiler:
         AggregationType.MAX: "MAX",
     }
 
+    # might revisit this approach - considered using sqlglot's AST directly instead
+    # of string interpolation, but it got messy fast. string building is simpler
+    # even if it feels a bit crude. the sqlglot format step cleans it up anyway.
+    # def _build_with_ast(self, query: MetricQuery) -> exp.Select:
+    #     select = exp.Select()
+    #     for metric in query.metrics:
+    #         ...
+    #     return select
+
     def __init__(self, registry: MetricRegistry, dialect: str = "duckdb") -> None:
         self.registry = registry
         self.dialect = dialect  # passed to sqlglot for formatting
