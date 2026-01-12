@@ -1,9 +1,8 @@
 """Pytest fixtures for MetricForge tests."""
 
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
-import duckdb
 import pytest
 
 from metricforge.executor.duckdb_executor import DuckDBExecutor

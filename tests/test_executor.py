@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from metricforge.executor.duckdb_executor import DuckDBExecutor
 
 

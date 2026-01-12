@@ -18,7 +18,7 @@ class MetricQuery(BaseModel):
 
     metrics: list[str]
     dimensions: list[str] = Field(default_factory=list)
-    filters: list[str] = Field(default_factory=list)  # raw sql fragments - might want to parse these eventually
+    filters: list[str] = Field(default_factory=list)  # raw sql WHERE fragments
     time_grain: str | None = None  # day, week, month, etc.
     start_date: date | None = None
     end_date: date | None = None

@@ -15,7 +15,6 @@ sqlglot does the heavy lifting for sql formatting and dialect translation.
 from dataclasses import dataclass, field
 
 import sqlglot
-from sqlglot import exp  # not currently using exp but keeping for future ast work
 
 from metricforge.models.metric import (
     CumulativeMetricParams,
@@ -27,7 +26,6 @@ from metricforge.models.metric import (
 from metricforge.models.query import MetricQuery
 from metricforge.models.semantic_model import (
     AggregationType,
-    Dimension,
     DimensionType,
     Measure,
     SemanticModel,

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from metricforge.models.metric import SimpleMetricParams
 from metricforge.parser.loader import MetricRegistry
 
 

@@ -8,7 +8,6 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
-
 # metric type params - I went back and forth on whether to use inheritance
 # or composition here. ended up with separate classes since the params are
 # genuinely different for each type. probably the right call.

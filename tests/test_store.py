@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from metricforge.store import MetricStore
 
 
@@ -56,7 +54,7 @@ class TestMetricStore:
     def test_validate_success(self, metrics_dir: Path):
         """Validation passes for valid metrics."""
         store = MetricStore(metrics_dir)
-        errors = store.validate()
+        store.validate()
         # Note: validation may have errors if tables don't exist
         # but the metrics should at least compile
         store.close()

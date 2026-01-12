@@ -1,6 +1,5 @@
 """Tests for SQL compiler."""
 
-import pytest
 
 from metricforge.compiler.sql_builder import SQLCompiler
 from metricforge.models.query import MetricQuery
