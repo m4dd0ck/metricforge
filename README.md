@@ -1,8 +1,6 @@
 # MetricForge
 
-**Local-first semantic layer for e-commerce analytics.**
-
-Define your metrics once in YAML, query them anywhere — via Python, CLI, or SQL.
+Define metrics in YAML, query them via Python or CLI. DuckDB backend.
 
 ## Features
 
