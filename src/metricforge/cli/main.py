@@ -1,11 +1,4 @@
-"""CLI for MetricForge.
-
-using typer because it's basically click but with better type hint support.
-rich makes the output look nice without much effort.
-
-the cli is intentionally simple - just enough to be useful for scripting
-and interactive exploration. the python api is for anything more complex.
-"""
+"""CLI for MetricForge."""
 
 import json
 from pathlib import Path
@@ -18,7 +11,6 @@ from rich.table import Table
 
 from metricforge.store import MetricStore
 
-# short name for muscle memory - "mf query revenue" is easier than "metricforge query..."
 app = typer.Typer(
     name="mf",
     help="MetricForge - Semantic Layer CLI",
@@ -28,10 +20,6 @@ console = Console()
 
 
 def get_store(metrics_dir: Path, db_path: str | None = None) -> MetricStore:
-    """Create a MetricStore instance.
-
-    factored out so we can handle errors consistently across commands.
-    """
     return MetricStore(metrics_dir, db_path)
 
 
@@ -42,17 +30,13 @@ def list_items(
         "./metrics"
     ),
 ) -> None:
-    """List metrics, dimensions, or measures.
-
-    quick way to see what's available without digging through yaml files.
-    """
+    """List metrics, dimensions, or measures."""
     try:
         store = get_store(metrics_dir)
     except Exception as e:
         console.print(f"[red]Error loading metrics: {e}[/red]")
         raise typer.Exit(1)
 
-    # could use a dict dispatch here but explicit is fine for 3 options
     if item_type == "metrics":
         _list_metrics(store)
     elif item_type == "dimensions":
@@ -65,7 +49,6 @@ def list_items(
 
 
 def _list_metrics(store: MetricStore) -> None:
-    """List all metrics."""
     metrics = store.list_metrics()
 
     if not metrics:
@@ -88,7 +71,6 @@ def _list_metrics(store: MetricStore) -> None:
 
 
 def _list_dimensions(store: MetricStore) -> None:
-    """List all dimensions."""
     dims = store.list_dimensions()
 
     if not dims:
@@ -113,7 +95,6 @@ def _list_dimensions(store: MetricStore) -> None:
 
 
 def _list_measures(store: MetricStore) -> None:
-    """List all measures."""
     measures = store.list_measures()
 
     if not measures:
@@ -163,19 +144,13 @@ def query(
     ] = "table",
     limit: Annotated[int | None, typer.Option("--limit", "-l", help="Maximum rows")] = None,
 ) -> None:
-    """Query metrics with optional dimensions and filters.
-
-    this is the main command - compiles and executes a metric query.
-    lots of options but reasonable defaults so simple queries are easy.
-    """
+    """Query metrics with optional dimensions and filters."""
     try:
         store = get_store(metrics_dir, db_path)
     except Exception as e:
         console.print(f"[red]Error loading metrics: {e}[/red]")
         raise typer.Exit(1)
 
-    # parse comma/semicolon separated inputs
-    # semicolons for filters since sql might have commas
     metric_list = [m.strip() for m in metrics.split(",")]
     dim_list = [d.strip() for d in dimensions.split(",")] if dimensions else []
     filter_list = [f.strip() for f in filters.split(";")] if filters else []
@@ -212,16 +187,10 @@ def query(
 
 
 def _output_result(result, output_format: str) -> None:
-    """Output query result in the specified format.
-
-    table is default for humans, json and csv for piping to other tools.
-    the csv output is basic - doesn't handle quoting edge cases properly.
-    """
+    """Output query result in the specified format."""
     if output_format == "json":
-        # default=str handles dates and other non-serializable types
         console.print(json.dumps(result.data, indent=2, default=str))
     elif output_format == "csv":
-        # quick and dirty csv - good enough for most cases
         # TODO: use csv module for proper escaping
         if result.data:
             console.print(",".join(result.columns))
@@ -229,7 +198,6 @@ def _output_result(result, output_format: str) -> None:
                 values = [str(row.get(c, "")) for c in result.columns]
                 console.print(",".join(values))
     else:
-        # rich table looks nice in terminal
         table = Table(
             title=f"Query Results ({result.row_count} rows, {result.execution_time_ms}ms)"
         )
@@ -249,11 +217,7 @@ def validate(
         "./metrics"
     ),
 ) -> None:
-    """Validate all metric definitions.
-
-    good to run in ci to catch broken metric configs before they cause
-    problems in production dashboards.
-    """
+    """Validate all metric definitions."""
     try:
         store = get_store(metrics_dir)
     except Exception as e:
@@ -297,12 +261,7 @@ def show_sql(
     end_date: Annotated[str | None, typer.Option("--end", help="End date (YYYY-MM-DD)")] = None,
     limit: Annotated[int | None, typer.Option("--limit", "-l", help="Maximum rows")] = None,
 ) -> None:
-    """Show generated SQL without executing.
-
-    I find myself using this a lot during development to see what sql
-    is being generated. also useful when you want to copy the query
-    into another tool.
-    """
+    """Show generated SQL without executing."""
     try:
         store = get_store(metrics_dir)
     except Exception as e:
