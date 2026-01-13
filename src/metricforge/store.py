@@ -1,11 +1,4 @@
-"""Main MetricStore interface for MetricForge.
-
-this is the primary api - most users will only interact with MetricStore.
-it wires together the registry, compiler, and executor internally.
-
-design decision: load metrics at init time rather than lazily. makes errors
-surface immediately which is less surprising for users.
-"""
+"""Main MetricStore interface for MetricForge."""
 
 from datetime import date
 from pathlib import Path
@@ -17,11 +10,7 @@ from metricforge.parser.loader import MetricRegistry
 
 
 class MetricStore:
-    """Main interface for MetricForge.
-
-    ties together the registry (what metrics exist), compiler (how to turn
-    them into sql), and executor (how to run the sql against duckdb).
-    """
+    """Main interface for MetricForge."""
 
     def __init__(
         self,
@@ -54,9 +43,6 @@ class MetricStore:
         order_by: list[str] | None = None,
     ) -> QueryResult:
         """Query metrics with optional dimensions and filters.
-
-        this is the main workhorse method - takes a semantic query and returns
-        actual data. goes through compile -> execute pipeline internally.
 
         Args:
             metrics: List of metric names to compute.
@@ -101,11 +87,7 @@ class MetricStore:
         limit: int | None = None,
         order_by: list[str] | None = None,
     ) -> str:
-        """Get the SQL without executing it.
-
-        useful for debugging, auditing, or running the query elsewhere.
-        same signature as query() so you can easily switch between them.
-        """
+        """Get the SQL without executing it."""
         start = self._parse_date(start_date) if start_date else None
         end = self._parse_date(end_date) if end_date else None
 
@@ -121,9 +103,6 @@ class MetricStore:
         )
         return self.compiler.compile(query)
 
-    # --- introspection methods ---
-    # these are handy for discovery and building uis on top of the store
-
     def list_metrics(self) -> list[dict]:
         """List all available metrics."""
         return [
@@ -136,11 +115,7 @@ class MetricStore:
         ]
 
     def list_dimensions(self) -> list[dict]:
-        """List all available dimensions.
-
-        returns flattened list across all models - includes which model
-        each dimension comes from in case that matters.
-        """
+        """List all available dimensions across all models."""
         dims = []
         for model in self.registry.semantic_models.values():
             for dim in model.dimensions:
@@ -155,11 +130,7 @@ class MetricStore:
         return dims
 
     def list_measures(self) -> list[dict]:
-        """List all available measures.
-
-        measures are the raw aggregations - users typically work with
-        metrics which are built on top of measures.
-        """
+        """List all available measures across all models."""
         measures = []
         for model in self.registry.semantic_models.values():
             for measure in model.measures:
@@ -174,12 +145,7 @@ class MetricStore:
         return measures
 
     def validate(self) -> list[str]:
-        """Validate all metric definitions. Returns list of errors.
-
-        tries to compile each metric to catch any issues with the
-        definition. doesn't execute anything so this is safe to run
-        even without data loaded.
-        """
+        """Validate all metric definitions. Returns list of errors."""
         errors = []
 
         for metric in self.registry.metrics.values():
@@ -192,11 +158,7 @@ class MetricStore:
         return errors
 
     def _parse_date(self, value: str | date) -> date:
-        """Parse a date string or return date object.
-
-        accepts iso format strings (YYYY-MM-DD) which is what most
-        people expect. keeps the public api flexible.
-        """
+        """Parse ISO date string or return date object as-is."""
         if isinstance(value, date):
             return value
         return date.fromisoformat(value)
@@ -205,7 +167,6 @@ class MetricStore:
         """Close database connection."""
         self.executor.close()
 
-    # context manager for clean resource cleanup
     def __enter__(self) -> "MetricStore":
         return self
 
