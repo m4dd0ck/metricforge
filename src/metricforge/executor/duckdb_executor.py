@@ -89,7 +89,8 @@ class DuckDBExecutor:
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
             [table_name],
         )
-        return result.fetchone()[0] > 0
+        row = result.fetchone()
+        return row is not None and bool(row[0] > 0)
 
     def get_table_schema(self, table_name: str) -> list[tuple[str, str]]:
         result = self.conn.execute(f"DESCRIBE {table_name}")

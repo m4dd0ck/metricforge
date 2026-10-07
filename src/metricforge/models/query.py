@@ -1,6 +1,7 @@
 """Pydantic models for metric queries and results."""
 
 from datetime import date
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,6 @@ class QueryResult(BaseModel):
 
     sql: str
     columns: list[str]
-    data: list[dict]
+    data: list[dict[str, Any]]
     row_count: int
     execution_time_ms: float
