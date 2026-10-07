@@ -67,6 +67,9 @@ class MetricRegistry:
         metric_type = data.get("type")
         type_params_data = data.get("type_params", {})
 
+        type_params: (
+            SimpleMetricParams | DerivedMetricParams | RatioMetricParams | CumulativeMetricParams
+        )
         if metric_type == "simple":
             type_params = SimpleMetricParams(**type_params_data)
         elif metric_type == "derived":

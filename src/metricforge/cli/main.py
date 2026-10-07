@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.syntax import Syntax
 from rich.table import Table
 
+from metricforge.models.query import QueryResult
 from metricforge.store import MetricStore
 
 app = typer.Typer(
@@ -186,7 +187,7 @@ def query(
     _output_result(result, output)
 
 
-def _output_result(result, output_format: str) -> None:
+def _output_result(result: QueryResult, output_format: str) -> None:
     """Output query result in the specified format."""
     if output_format == "json":
         console.print(json.dumps(result.data, indent=2, default=str))

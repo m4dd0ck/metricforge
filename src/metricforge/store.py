@@ -2,6 +2,8 @@
 
 from datetime import date
 from pathlib import Path
+from types import TracebackType
+from typing import Any
 
 from metricforge.compiler.sql_builder import SQLCompiler
 from metricforge.executor.duckdb_executor import DuckDBExecutor
@@ -103,7 +105,7 @@ class MetricStore:
         )
         return self.compiler.compile(query)
 
-    def list_metrics(self) -> list[dict]:
+    def list_metrics(self) -> list[dict[str, Any]]:
         """List all available metrics."""
         return [
             {
@@ -114,7 +116,7 @@ class MetricStore:
             for m in self.registry.metrics.values()
         ]
 
-    def list_dimensions(self) -> list[dict]:
+    def list_dimensions(self) -> list[dict[str, Any]]:
         """List all available dimensions across all models."""
         dims = []
         for model in self.registry.semantic_models.values():
@@ -129,7 +131,7 @@ class MetricStore:
                 )
         return dims
 
-    def list_measures(self) -> list[dict]:
+    def list_measures(self) -> list[dict[str, Any]]:
         """List all available measures across all models."""
         measures = []
         for model in self.registry.semantic_models.values():
@@ -170,5 +172,10 @@ class MetricStore:
     def __enter__(self) -> "MetricStore":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
