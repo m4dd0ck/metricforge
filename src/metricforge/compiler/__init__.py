@@ -1,5 +1,5 @@
 """SQL compiler for metric queries."""
 
-from metricforge.compiler.sql_builder import SQLCompiler
+from metricforge.compiler.sql_builder import MultiModelQueryError, SQLCompiler
 
-__all__ = ["SQLCompiler"]
+__all__ = ["MultiModelQueryError", "SQLCompiler"]
