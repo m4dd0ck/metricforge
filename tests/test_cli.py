@@ -63,9 +63,7 @@ class TestCLIShowSQL:
 
     def test_show_sql_multiple_metrics(self, metrics_dir: Path):
         """Can show SQL for multiple metrics."""
-        result = runner.invoke(
-            app, ["show-sql", "revenue,total_orders", "--dir", str(metrics_dir)]
-        )
+        result = runner.invoke(app, ["show-sql", "revenue,total_orders", "--dir", str(metrics_dir)])
         assert result.exit_code == 0
         assert "SELECT" in result.stdout.upper()
 
@@ -113,9 +111,7 @@ class TestCLIQuery:
 
     def test_query_with_show_sql(self, metrics_dir: Path):
         """Can show SQL with query."""
-        result = runner.invoke(
-            app, ["query", "revenue", "--dir", str(metrics_dir), "--sql"]
-        )
+        result = runner.invoke(app, ["query", "revenue", "--dir", str(metrics_dir), "--sql"])
         # May fail execution but should show SQL
         assert "SELECT" in result.stdout.upper()
 
