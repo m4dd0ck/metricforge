@@ -130,7 +130,7 @@ metrics:
       numerator: purchases
       denominator: sessions
 
-  # Cumulative metric
+  # Cumulative metric (running total; add grain_to_date: month for month-to-date)
   - name: cumulative_revenue
     type: cumulative
     type_params:
@@ -168,7 +168,7 @@ metrics:
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │  YAML Metrics   │────▶│  MetricRegistry │────▶│   SQLCompiler   │
-│  (definitions)  │     │  (in-memory)    │     │   (SQLGlot)     │
+│  (definitions)  │     │  (in-memory)    │     │(SQLGlot formats)│
 └─────────────────┘     └─────────────────┘     └────────┬────────┘
                                                          │
                                                          ▼
@@ -177,6 +177,14 @@ metrics:
 │  (data + SQL)   │     │   Executor      │     │                 │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
+
+`SQLCompiler` assembles the SELECT / FROM / WHERE / GROUP BY clauses as strings. SQLGlot
+is only used afterwards to parse and pretty-print the result (falling back to the raw string
+if parsing fails); it does not build or validate the query.
+
+Every query compiles to a single `FROM <table>`. All metrics and dimensions in one query must
+resolve to the same semantic model table; otherwise `compile()` raises `MultiModelQueryError`
+naming the models involved. There is no join support yet, so query each model separately.
 
 ## Project Structure
 
@@ -207,7 +215,11 @@ uv run pytest tests/ -v
 | **simple** | Single measure aggregation | `SUM(amount)`, `COUNT(*)` |
 | **derived** | Calculation from other metrics | `revenue / orders` |
 | **ratio** | Two metrics as numerator/denominator | `completed / total` |
-| **cumulative** | Running total over time | Month-to-date revenue |
+| **cumulative** | Running total over the queried time dimension; `grain_to_date: month` restarts it each month | Month-to-date revenue |
+
+Cumulative metrics compile to `SUM(<aggregate>) OVER (PARTITION BY <other dimensions>
+ORDER BY <time dimension> ROWS UNBOUNDED PRECEDING)`. Without a time dimension in the query
+they return the plain total.
 
 ## Aggregation Types
 
