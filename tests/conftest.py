@@ -105,6 +105,14 @@ metrics:
     type_params:
       measure: order_amount
     filter: "status = 'completed'"
+
+  - name: mtd_revenue
+    description: "Month-to-date revenue"
+    type: cumulative
+    type_params:
+      measure: order_amount
+      grain_to_date: month
+    filter: "status = 'completed'"
 """
 
 
