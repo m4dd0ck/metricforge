@@ -55,7 +55,10 @@ def main():
         end_date="2024-06-30",
     )
     for row in result.data:
-        month = row["order_date"].strftime("%Y-%m") if hasattr(row["order_date"], "strftime") else str(row["order_date"])[:7]
+        order_date = row["order_date"]
+        month = (
+            order_date.strftime("%Y-%m") if hasattr(order_date, "strftime") else str(order_date)[:7]
+        )
         print(f"   {month}: ${row['revenue']:,.2f}")
 
     # 5. Ratio metrics
@@ -85,7 +88,10 @@ def main():
         dimensions=["traffic_source"],
     )
     for row in result.data:
-        print(f"   {row['traffic_source']}: {row['total_sessions']} sessions, {row['visitors']} unique visitors")
+        print(
+            f"   {row['traffic_source']}: {row['total_sessions']} sessions, "
+            f"{row['visitors']} unique visitors"
+        )
 
     print("\n" + "=" * 60)
     print("Demo complete!")

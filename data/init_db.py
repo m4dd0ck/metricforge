@@ -1,7 +1,7 @@
 """Initialize DuckDB database with sample data."""
 
 import duckdb
-from pathlib import Path
+
 
 def init_database(db_path: str = "data/metricforge.duckdb"):
     """Create a DuckDB database with sample data loaded."""
@@ -27,6 +27,7 @@ def init_database(db_path: str = "data/metricforge.duckdb"):
     print(f"  - {sessions} sessions")
 
     conn.close()
+
 
 if __name__ == "__main__":
     init_database()
