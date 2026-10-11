@@ -9,7 +9,7 @@ Define metrics in YAML, query them via Python or CLI. DuckDB backend.
 - **Time grain support** - Automatic DATE_TRUNC for day/week/month/quarter/year
 - **SQL transparency** - Always see the generated SQL
 - **DuckDB backend** - Fast, embedded OLAP database
-- **Rich CLI** - List, query, validate, and inspect metrics
+- **Rich CLI** - List, query, validate, and show SQL for metrics
 
 ## Installation
 
@@ -162,6 +162,11 @@ metrics:
 --output, -o    Output format: table, json, csv
 --limit, -l     Maximum rows
 ```
+
+`--start` and `--end` are inclusive. They apply to the time dimension in `--dimensions`, or,
+when none is given, to the first time dimension the metric's model declares. A model without
+a time dimension rejects a date range. A `filter` on a derived or ratio metric applies to
+every metric it references.
 
 ## Architecture
 
