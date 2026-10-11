@@ -1,5 +1,6 @@
 """SQL compiler for metric queries."""
 
+import re
 from dataclasses import dataclass, field
 
 import sqlglot
@@ -121,11 +122,12 @@ class SQLCompiler:
             ref_metric = self.registry.get_metric(ref_name)
             sub_metrics[ref_name] = self._resolve_single_metric(ref_metric, query)
 
-        # TODO: use proper expression parsing for robustness
-        expr = params.expr
-        for ref_name, resolved in sub_metrics.items():
-            sub_expr = resolved.expr
-            expr = expr.replace(ref_name, f"({sub_expr})")
+        # Reason: one pass over the original text, matching whole words longest-first.
+        # str.replace mangled names that were substrings of other names or that appeared
+        # inside already-substituted SQL (e.g. a metric called "amount").
+        names = sorted(sub_metrics, key=len, reverse=True)
+        pattern = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
+        expr = pattern.sub(lambda m: f"({sub_metrics[m.group(0)].expr})", params.expr)
 
         model = next(iter(sub_metrics.values())).model if sub_metrics else None
 

@@ -290,6 +290,58 @@ class TestSQLCompilerCumulative:
         assert "SUM" in sql.upper()
 
 
+OVERLAP_YAML = """
+semantic_models:
+  - name: orders
+    table: orders
+    primary_entity: order_id
+    entities:
+      - name: order_id
+        type: primary
+    measures:
+      - name: order_count
+        agg: count
+        expr: order_id
+      - name: order_amount
+        agg: sum
+        expr: amount
+    dimensions:
+      - name: order_date
+        type: time
+        expr: order_date
+      - name: country
+        type: categorical
+
+metrics:
+  - name: orders
+    type: simple
+    type_params:
+      measure: order_count
+  - name: completed_orders
+    type: simple
+    type_params:
+      measure: order_count
+    filter: "status = 'completed'"
+  - name: revenue
+    type: simple
+    type_params:
+      measure: order_amount
+  - name: amount
+    type: simple
+    type_params:
+      measure: order_amount
+  - name: completion_share
+    type: derived
+    type_params:
+      expr: "completed_orders / orders"
+      metrics: [orders, completed_orders]
+  - name: rev_per_amount
+    type: derived
+    type_params:
+      expr: "revenue / amount"
+      metrics: [revenue, amount]
+"""
+
 NO_TIME_YAML = """
 semantic_models:
   - name: products
@@ -324,6 +376,18 @@ def _registry_from(tmp_path: Path, yaml_text: str) -> MetricRegistry:
 
 
 class TestCorrectness:
+    def test_derived_substitution_respects_word_boundaries(self, tmp_path: Path):
+        compiler = SQLCompiler(_registry_from(tmp_path, OVERLAP_YAML))
+        sql = compiler.compile(MetricQuery(metrics=["completion_share"])).lower()
+        assert "completed_(" not in sql
+        assert sql.count("count(") == 2
+
+    def test_derived_substitution_does_not_recurse_into_substituted_sql(self, tmp_path: Path):
+        compiler = SQLCompiler(_registry_from(tmp_path, OVERLAP_YAML))
+        sql = compiler.compile(MetricQuery(metrics=["rev_per_amount"])).upper().replace(" ", "")
+        assert "SUM(SUM" not in sql
+        assert sql.count("SUM(") == 2
+
     def test_date_range_uses_model_time_dimension_when_query_has_none(
         self, registry: MetricRegistry
     ):
