@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from metricforge.compiler.sql_builder import MultiModelQueryError, SQLCompiler
+from metricforge.compiler.sql_builder import (
+    MultiModelQueryError,
+    NoTimeDimensionError,
+    SQLCompiler,
+)
 from metricforge.models.query import MetricQuery
 from metricforge.parser.loader import MetricRegistry
 
@@ -284,3 +288,53 @@ class TestSQLCompilerCumulative:
 
         assert "OVER" not in sql.upper()
         assert "SUM" in sql.upper()
+
+
+NO_TIME_YAML = """
+semantic_models:
+  - name: products
+    table: products
+    primary_entity: product_id
+    entities:
+      - name: product_id
+        type: primary
+    measures:
+      - name: product_count
+        agg: count
+        expr: product_id
+    dimensions:
+      - name: category
+        type: categorical
+
+metrics:
+  - name: products
+    type: simple
+    type_params:
+      measure: product_count
+"""
+
+
+def _registry_from(tmp_path: Path, yaml_text: str) -> MetricRegistry:
+    metrics = tmp_path / "metrics"
+    metrics.mkdir()
+    (metrics / "m.yaml").write_text(yaml_text)
+    reg = MetricRegistry()
+    reg.load_directory(metrics)
+    return reg
+
+
+class TestCorrectness:
+    def test_date_range_uses_model_time_dimension_when_query_has_none(
+        self, registry: MetricRegistry
+    ):
+        compiler = SQLCompiler(registry)
+        query = MetricQuery(metrics=["revenue"], start_date="2024-01-01", end_date="2024-01-31")
+        sql = compiler.compile(query)
+        assert "WHERE" in sql.upper()
+        assert "order_date" in sql and "2024-01-01" in sql and "2024-01-31" in sql
+
+    def test_date_range_without_any_time_dimension_raises(self, tmp_path: Path):
+        compiler = SQLCompiler(_registry_from(tmp_path, NO_TIME_YAML))
+        query = MetricQuery(metrics=["products"], start_date="2024-01-01")
+        with pytest.raises(NoTimeDimensionError, match="no time dimension"):
+            compiler.compile(query)

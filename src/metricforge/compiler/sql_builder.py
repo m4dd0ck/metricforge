@@ -25,6 +25,10 @@ class MultiModelQueryError(ValueError):
     """Raised when one query needs metrics or dimensions from more than one table."""
 
 
+class NoTimeDimensionError(ValueError):
+    """Raised when a query has a date range but no time dimension to apply it to."""
+
+
 @dataclass
 class ResolvedMetric:
     """A metric resolved to its SQL components."""
@@ -60,7 +64,7 @@ class SQLCompiler:
 
         select_exprs = self._build_select_exprs(resolved_metrics, query)
         from_clause = self._build_from_clause(models, query)
-        where_conditions = self._build_where_conditions(resolved_metrics, query)
+        where_conditions = self._build_where_conditions(query, models)
         group_by_exprs = self._build_group_by_exprs(query)
         order_by_exprs = self._build_order_by_exprs(query)
 
@@ -288,24 +292,40 @@ class SQLCompiler:
 
         return tables[0]
 
-    def _build_where_conditions(
-        self, resolved_metrics: dict[str, ResolvedMetric], query: MetricQuery
-    ) -> list[str]:
-        """Build WHERE conditions."""
+    def _build_where_conditions(self, query: MetricQuery, models: list[SemanticModel]) -> list[str]:
+        """Build WHERE conditions.
+
+        Raises:
+            NoTimeDimensionError: If the query has a date range but neither the query nor the
+                model names a time dimension.
+        """
         conditions = list(query.filters)
 
         if query.start_date or query.end_date:
-            time_dim = self._find_time_dimension(query.dimensions)
-            if time_dim:
-                dim = self.registry.get_dimension(time_dim)
-                col_expr = dim.expr or time_dim
+            time_dim = self._find_time_dimension(query.dimensions) or self._model_time_dimension(
+                models, query
+            )
+            col_expr = self.registry.get_dimension(time_dim).expr or time_dim
 
-                if query.start_date:
-                    conditions.append(f"{col_expr} >= '{query.start_date}'")
-                if query.end_date:
-                    conditions.append(f"{col_expr} <= '{query.end_date}'")
+            if query.start_date:
+                conditions.append(f"{col_expr} >= '{query.start_date}'")
+            if query.end_date:
+                conditions.append(f"{col_expr} <= '{query.end_date}'")
 
         return conditions
+
+    def _model_time_dimension(self, models: list[SemanticModel], query: MetricQuery) -> str:
+        """The first time dimension declared by the query's model, for date-range fallback."""
+        for model in models:
+            for dim in model.dimensions:
+                if dim.type == DimensionType.TIME:
+                    return dim.name
+        names = ", ".join(f"'{m.name}'" for m in models) or "the query"
+        requested = ", ".join(f"'{name}'" for name in query.metrics)
+        raise NoTimeDimensionError(
+            f"Query for {requested} has a date range but {names} declares no time dimension; "
+            "add one or drop the date range."
+        )
 
     def _find_time_dimension(self, dimensions: list[str]) -> str | None:
         for dim_name in dimensions:

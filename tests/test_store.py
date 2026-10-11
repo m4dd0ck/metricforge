@@ -270,3 +270,8 @@ metrics:
         with MetricStore(metrics_dir) as store:
             with pytest.raises(MultiModelQueryError, match="'orders' and 'sessions'"):
                 store.get_sql(metrics=["revenue", "total_sessions"])
+
+
+def test_date_range_without_dimension_filters_rows(store_with_data: MetricStore):
+    result = store_with_data.query(["revenue"], start_date="2024-01-01", end_date="2024-01-31")
+    assert float(result.data[0]["revenue"]) == 325.0
