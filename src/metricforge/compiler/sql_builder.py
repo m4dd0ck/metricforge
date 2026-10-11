@@ -308,9 +308,10 @@ class SQLCompiler:
             col_expr = self.registry.get_dimension(time_dim).expr or time_dim
 
             if query.start_date:
-                conditions.append(f"{col_expr} >= '{query.start_date}'")
+                conditions.append(f"{col_expr} >= DATE '{query.start_date}'")
             if query.end_date:
-                conditions.append(f"{col_expr} <= '{query.end_date}'")
+                # Reason: "<= end" is midnight on a TIMESTAMP column, which drops the last day
+                conditions.append(f"{col_expr} < DATE '{query.end_date}' + INTERVAL 1 DAY")
 
         return conditions
 

@@ -272,6 +272,51 @@ metrics:
                 store.get_sql(metrics=["revenue", "total_sessions"])
 
 
+EVENTS_YAML = """
+semantic_models:
+  - name: events
+    table: events
+    primary_entity: event_id
+    entities:
+      - name: event_id
+        type: primary
+    measures:
+      - name: event_count
+        agg: count
+        expr: event_id
+    dimensions:
+      - name: event_at
+        type: time
+        expr: event_at
+
+metrics:
+  - name: events
+    type: simple
+    type_params:
+      measure: event_count
+"""
+
+
+def _store_from(tmp_path: Path, yaml_text: str) -> MetricStore:
+    metrics = tmp_path / "metrics"
+    metrics.mkdir()
+    (metrics / "m.yaml").write_text(yaml_text)
+    return MetricStore(metrics)
+
+
 def test_date_range_without_dimension_filters_rows(store_with_data: MetricStore):
     result = store_with_data.query(["revenue"], start_date="2024-01-01", end_date="2024-01-31")
     assert float(result.data[0]["revenue"]) == 325.0
+
+
+def test_end_date_is_inclusive_on_timestamp_column(tmp_path: Path):
+    store = _store_from(tmp_path, EVENTS_YAML)
+    try:
+        store.executor.conn.execute("CREATE TABLE events (event_id INTEGER, event_at TIMESTAMP)")
+        store.executor.conn.execute(
+            "INSERT INTO events VALUES (1, '2024-01-10 09:30:00'), (2, '2024-01-11 00:00:00')"
+        )
+        result = store.query(["events"], start_date="2024-01-10", end_date="2024-01-10")
+        assert result.data[0]["events"] == 1
+    finally:
+        store.close()
