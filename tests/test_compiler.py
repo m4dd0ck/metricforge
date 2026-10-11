@@ -402,3 +402,7 @@ class TestCorrectness:
         query = MetricQuery(metrics=["products"], start_date="2024-01-01")
         with pytest.raises(NoTimeDimensionError, match="no time dimension"):
             compiler.compile(query)
+
+    def test_limit_zero_is_emitted(self, registry: MetricRegistry):
+        sql = SQLCompiler(registry).compile(MetricQuery(metrics=["revenue"], limit=0))
+        assert "LIMIT 0" in sql.upper()

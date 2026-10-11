@@ -403,7 +403,7 @@ class SQLCompiler:
         if order_by_exprs:
             parts.append(f"ORDER BY {', '.join(order_by_exprs)}")
 
-        if limit:
+        if limit is not None:
             parts.append(f"LIMIT {limit}")
 
         return "\n".join(parts)
