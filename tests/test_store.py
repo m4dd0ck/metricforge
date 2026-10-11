@@ -296,6 +296,26 @@ metrics:
       measure: event_count
 """
 
+US_AOV_YAML = """
+  - name: us_aov
+    type: derived
+    filter: "country = 'US'"
+    type_params:
+      expr: "revenue / completed_orders"
+      metrics: [revenue, completed_orders]
+"""
+
+ORDERS_DDL = """
+    CREATE TABLE orders (
+        order_id INTEGER,
+        customer_id INTEGER,
+        amount DECIMAL(10, 2),
+        status VARCHAR,
+        country VARCHAR,
+        order_date DATE
+    )
+"""
+
 
 def _store_from(tmp_path: Path, yaml_text: str) -> MetricStore:
     metrics = tmp_path / "metrics"
@@ -318,5 +338,20 @@ def test_end_date_is_inclusive_on_timestamp_column(tmp_path: Path):
         )
         result = store.query(["events"], start_date="2024-01-10", end_date="2024-01-10")
         assert result.data[0]["events"] == 1
+    finally:
+        store.close()
+
+
+def test_derived_metric_filter_is_applied(
+    tmp_path: Path, sample_metrics_yaml: str, sample_orders_data: list[tuple]
+):
+    store = _store_from(tmp_path, sample_metrics_yaml + US_AOV_YAML)
+    try:
+        store.executor.conn.execute(ORDERS_DDL)
+        store.executor.conn.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?)", sample_orders_data
+        )
+        result = store.query(["us_aov"])
+        assert float(result.data[0]["us_aov"]) == 190.0
     finally:
         store.close()

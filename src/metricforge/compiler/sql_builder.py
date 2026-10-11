@@ -30,6 +30,14 @@ class NoTimeDimensionError(ValueError):
     """Raised when a query has a date range but no time dimension to apply it to."""
 
 
+def _and(*parts: str | None) -> str | None:
+    """Combine SQL boolean fragments with AND, skipping empties."""
+    present = [p for p in parts if p]
+    if not present:
+        return None
+    return present[0] if len(present) == 1 else " AND ".join(f"({p})" for p in present)
+
+
 @dataclass
 class ResolvedMetric:
     """A metric resolved to its SQL components."""
@@ -87,24 +95,29 @@ class SQLCompiler:
             resolved[name] = self._resolve_single_metric(metric, query)
         return resolved
 
-    def _resolve_single_metric(self, metric: Metric, query: MetricQuery) -> ResolvedMetric:
+    def _resolve_single_metric(
+        self, metric: Metric, query: MetricQuery, extra_filter: str | None = None
+    ) -> ResolvedMetric:
+        """Resolve one metric; ``extra_filter`` is a parent derived/ratio metric's filter."""
         if metric.type == "simple":
-            return self._resolve_simple_metric(metric)
+            return self._resolve_simple_metric(metric, extra_filter)
         elif metric.type == "derived":
-            return self._resolve_derived_metric(metric, query)
+            return self._resolve_derived_metric(metric, query, extra_filter)
         elif metric.type == "ratio":
-            return self._resolve_ratio_metric(metric, query)
+            return self._resolve_ratio_metric(metric, query, extra_filter)
         elif metric.type == "cumulative":
-            return self._resolve_cumulative_metric(metric, query)
+            return self._resolve_cumulative_metric(metric, query, extra_filter)
         else:
             raise ValueError(f"Unknown metric type: {metric.type}")
 
-    def _resolve_simple_metric(self, metric: Metric) -> ResolvedMetric:
+    def _resolve_simple_metric(
+        self, metric: Metric, extra_filter: str | None = None
+    ) -> ResolvedMetric:
         params: SimpleMetricParams = metric.type_params  # type: ignore
         model = self.registry.get_model_for_measure(params.measure)
         measure = self.registry.get_measure(params.measure)
 
-        expr = self._build_measure_expr(measure, metric.filter)
+        expr = self._build_measure_expr(measure, _and(metric.filter, extra_filter))
 
         return ResolvedMetric(
             name=metric.name,
@@ -113,14 +126,17 @@ class SQLCompiler:
             filter=metric.filter,
         )
 
-    def _resolve_derived_metric(self, metric: Metric, query: MetricQuery) -> ResolvedMetric:
+    def _resolve_derived_metric(
+        self, metric: Metric, query: MetricQuery, extra_filter: str | None = None
+    ) -> ResolvedMetric:
         """Resolve a derived metric to SQL."""
         params: DerivedMetricParams = metric.type_params  # type: ignore
+        combined = _and(metric.filter, extra_filter)
 
         sub_metrics: dict[str, ResolvedMetric] = {}
         for ref_name in params.metrics:
             ref_metric = self.registry.get_metric(ref_name)
-            sub_metrics[ref_name] = self._resolve_single_metric(ref_metric, query)
+            sub_metrics[ref_name] = self._resolve_single_metric(ref_metric, query, combined)
 
         # Reason: one pass over the original text, matching whole words longest-first.
         # str.replace mangled names that were substrings of other names or that appeared
@@ -140,15 +156,18 @@ class SQLCompiler:
             sub_metrics=sub_metrics,
         )
 
-    def _resolve_ratio_metric(self, metric: Metric, query: MetricQuery) -> ResolvedMetric:
+    def _resolve_ratio_metric(
+        self, metric: Metric, query: MetricQuery, extra_filter: str | None = None
+    ) -> ResolvedMetric:
         """Resolve a ratio metric to SQL."""
         params: RatioMetricParams = metric.type_params  # type: ignore
+        combined = _and(metric.filter, extra_filter)
 
         numerator_metric = self.registry.get_metric(params.numerator)
         denominator_metric = self.registry.get_metric(params.denominator)
 
-        num_resolved = self._resolve_single_metric(numerator_metric, query)
-        denom_resolved = self._resolve_single_metric(denominator_metric, query)
+        num_resolved = self._resolve_single_metric(numerator_metric, query, combined)
+        denom_resolved = self._resolve_single_metric(denominator_metric, query, combined)
 
         # NULLIF for division-by-zero, 1.0 for float division
         expr = f"({num_resolved.expr}) * 1.0 / NULLIF({denom_resolved.expr}, 0)"
@@ -162,13 +181,15 @@ class SQLCompiler:
             sub_metrics={params.numerator: num_resolved, params.denominator: denom_resolved},
         )
 
-    def _resolve_cumulative_metric(self, metric: Metric, query: MetricQuery) -> ResolvedMetric:
+    def _resolve_cumulative_metric(
+        self, metric: Metric, query: MetricQuery, extra_filter: str | None = None
+    ) -> ResolvedMetric:
         """Resolve a cumulative metric to a running total over the query's time dimension."""
         params: CumulativeMetricParams = metric.type_params  # type: ignore
         model = self.registry.get_model_for_measure(params.measure)
         measure = self.registry.get_measure(params.measure)
 
-        base_expr = self._build_measure_expr(measure, metric.filter)
+        base_expr = self._build_measure_expr(measure, _and(metric.filter, extra_filter))
         window = self._build_cumulative_window(query, params.grain_to_date)
         # Reason: without a time axis there is one bucket, so the running total is the total
         expr = f"SUM({base_expr}) {window}" if window else base_expr
