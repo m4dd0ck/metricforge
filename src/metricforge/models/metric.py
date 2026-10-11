@@ -29,9 +29,8 @@ class CumulativeMetricParams(BaseModel):
     """Parameters for cumulative (running total) metrics."""
 
     measure: str
-    window: str | None = None  # e.g., "7 days", "1 month"
+    window: str | None = None  # declared so a YAML "window:" key is rejected, not ignored
     grain_to_date: str | None = None  # e.g., "month" for MTD
-    # TODO: window parsing needs work
 
 
 MetricTypeParams = Annotated[
@@ -61,4 +60,10 @@ class Metric(BaseModel):
         expected = type_map[self.type]
         if not isinstance(self.type_params, expected):
             raise ValueError(f"Metric type '{self.type}' requires {expected.__name__}")
+        if isinstance(self.type_params, CumulativeMetricParams) and self.type_params.window:
+            # Reason: an ignored window compiled to an unbounded running total, silently wrong
+            raise ValueError(
+                f"Cumulative metric '{self.name}': 'window' is not implemented yet; "
+                "use grain_to_date or remove it"
+            )
         return self

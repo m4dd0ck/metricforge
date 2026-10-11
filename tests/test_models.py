@@ -192,3 +192,12 @@ class TestQueryResult:
         )
         assert result.row_count == 1
         assert result.columns == ["revenue"]
+
+
+def test_cumulative_window_is_rejected():
+    with pytest.raises(ValueError, match="window"):
+        Metric(
+            name="revenue_7d",
+            type="cumulative",
+            type_params=CumulativeMetricParams(measure="order_amount", window="7 days"),
+        )
