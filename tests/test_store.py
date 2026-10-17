@@ -1,10 +1,12 @@
 """Integration tests for MetricStore."""
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 
 from metricforge.compiler.sql_builder import MultiModelQueryError
+from metricforge.models.query import QueryResult
 from metricforge.store import MetricStore
 
 
@@ -270,30 +272,166 @@ class TestMetricStoreCumulative:
         assert totals["2024-03-01"] == 875
 
 
-class TestMetricStoreMultiModel:
-    def test_cross_model_query_raises(self, tmp_path: Path):
-        """Querying metrics from two tables fails instead of silently using one table."""
-        metrics_dir = tmp_path / "metrics"
-        metrics_dir.mkdir()
-        (metrics_dir / "m.yaml").write_text(
-            """
+JOINED_YAML = """
 semantic_models:
   - name: orders
     table: orders
     primary_entity: order_id
-    measures: [{name: order_amount, agg: sum, expr: amount}]
+    measures:
+      - {name: order_amount, agg: sum, expr: amount}
+      - {name: order_count, agg: count, expr: order_id}
+    dimensions:
+      - {name: order_date, type: time}
+      - {name: country, type: categorical}
+      - {name: order_status, type: categorical, expr: status}
   - name: sessions
     table: sessions
     primary_entity: session_id
-    measures: [{name: session_count, agg: count, expr: session_id}]
+    measures:
+      - {name: session_count, agg: count, expr: session_id}
+    dimensions:
+      - {name: session_date, type: time}
+      - {name: country, type: categorical}
+      - {name: device_type, type: categorical}
 metrics:
-  - {name: revenue, type: simple, type_params: {measure: order_amount}}
+  - name: revenue
+    type: simple
+    type_params: {measure: order_amount}
+    filter: "status = 'completed'"
+  - {name: total_orders, type: simple, type_params: {measure: order_count}}
   - {name: total_sessions, type: simple, type_params: {measure: session_count}}
+  - name: revenue_per_session
+    type: ratio
+    type_params: {numerator: revenue, denominator: total_sessions}
+  - name: us_revenue_per_session
+    type: ratio
+    filter: "country = 'US'"
+    type_params: {numerator: revenue, denominator: total_sessions}
+  - name: orders_per_session
+    type: derived
+    type_params: {expr: "total_orders / total_sessions", metrics: [total_orders, total_sessions]}
+  - {name: running_revenue, type: cumulative, type_params: {measure: order_amount}}
 """
+
+
+@pytest.fixture
+def joined_store(tmp_path: Path) -> Generator[MetricStore, None, None]:
+    """Orders and sessions on separate tables, sharing a country dimension."""
+    store = _store_from(tmp_path, JOINED_YAML)
+    conn = store.executor.conn
+    conn.execute(
+        "CREATE TABLE orders (order_id INT, amount DECIMAL(10, 2), status VARCHAR,"
+        " country VARCHAR, order_date DATE)"
+    )
+    conn.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
+        [
+            (1, 100, "completed", "US", "2024-01-15"),
+            (2, 50, "pending", "US", "2024-01-20"),
+            (3, 200, "completed", "UK", "2024-02-10"),
+            (4, 300, "completed", "DE", "2024-02-11"),
+        ],
+    )
+    conn.execute(
+        "CREATE TABLE sessions (session_id INT, country VARCHAR, device_type VARCHAR,"
+        " session_date DATE)"
+    )
+    conn.executemany(
+        "INSERT INTO sessions VALUES (?, ?, ?, ?)",
+        [
+            (1, "US", "mobile", "2024-01-01"),
+            (2, "US", "desktop", "2024-01-02"),
+            (3, "UK", "mobile", "2024-02-01"),
+            (4, "FR", "mobile", "2024-02-02"),
+            (5, "US", "mobile", "2024-02-03"),
+        ],
+    )
+    yield store
+    store.close()
+
+
+def _rows(result: QueryResult) -> list[tuple[object, ...]]:
+    return [tuple(None if v is None else str(v) for v in row.values()) for row in result.data]
+
+
+class TestMetricStoreMultiModel:
+    def test_metrics_from_two_tables_by_shared_dimension(self, joined_store: MetricStore):
+        """Each table is aggregated by country on its own; countries on one side only survive."""
+        result = joined_store.query(
+            metrics=["revenue", "total_sessions", "revenue_per_session"], dimensions=["country"]
         )
-        with MetricStore(metrics_dir) as store:
-            with pytest.raises(MultiModelQueryError, match="'orders' and 'sessions'"):
-                store.get_sql(metrics=["revenue", "total_sessions"])
+
+        assert _rows(result) == [
+            ("DE", "300.00", None, None),
+            ("FR", None, "1", None),
+            ("UK", "200.00", "1", "200.0"),
+            ("US", "100.00", "3", "33.333333333333336"),
+        ]
+
+    def test_derived_metric_across_tables_without_dimensions(self, joined_store: MetricStore):
+        result = joined_store.query(metrics=["orders_per_session"])
+
+        assert _rows(result) == [("0.8",)]  # 4 orders / 5 sessions
+
+    def test_time_axis_aligns_differently_named_time_dimensions(self, joined_store: MetricStore):
+        """order_date names the axis; sessions contributes session_date under that name."""
+        result = joined_store.query(
+            metrics=["revenue", "total_sessions"], dimensions=["order_date"], time_grain="month"
+        )
+
+        assert _rows(result) == [("2024-01-01", "100.00", "2"), ("2024-02-01", "500.00", "3")]
+
+    def test_date_range_applies_to_every_table(self, joined_store: MetricStore):
+        result = joined_store.query(
+            metrics=["revenue", "total_sessions"], start_date="2024-02-01", end_date="2024-02-29"
+        )
+
+        assert _rows(result) == [("500.00", "3")]
+
+    def test_shared_filter_applies_to_every_table(self, joined_store: MetricStore):
+        result = joined_store.query(
+            metrics=["revenue", "total_sessions"],
+            dimensions=["country"],
+            filters=["country IN ('US', 'UK')"],
+        )
+
+        assert _rows(result) == [("UK", "200.00", "1"), ("US", "100.00", "3")]
+
+    def test_filter_on_a_column_one_table_lacks_is_refused(self, joined_store: MetricStore):
+        with pytest.raises(MultiModelQueryError, match="'sessions' does not declare"):
+            joined_store.get_sql(
+                metrics=["revenue", "total_sessions"], filters=["status = 'completed'"]
+            )
+
+    def test_metric_filter_reaches_both_sides_of_a_ratio(self, joined_store: MetricStore):
+        """A filtered ratio keeps its own aggregate columns next to the unfiltered ones."""
+        result = joined_store.query(metrics=["revenue", "us_revenue_per_session"])
+
+        assert _rows(result) == [("600.00", "33.333333333333336")]
+        assert "revenue_2" in result.sql  # filtered revenue, distinct from plain revenue
+
+    def test_cumulative_metric_inside_a_joined_query(self, joined_store: MetricStore):
+        result = joined_store.query(
+            metrics=["running_revenue", "total_sessions"],
+            dimensions=["order_date"],
+            time_grain="month",
+        )
+
+        assert _rows(result) == [("2024-01-01", "150.00", "2"), ("2024-02-01", "650.00", "3")]
+
+    def test_order_by_and_limit_apply_to_the_joined_result(self, joined_store: MetricStore):
+        result = joined_store.query(
+            metrics=["revenue", "total_sessions"],
+            dimensions=["country"],
+            order_by=["revenue DESC NULLS LAST"],
+            limit=2,
+        )
+
+        assert _rows(result) == [("DE", "300.00", None), ("UK", "200.00", "1")]
+
+    def test_dimension_only_one_table_declares_is_refused(self, joined_store: MetricStore):
+        with pytest.raises(MultiModelQueryError, match="'device_type' is not declared by 'orders'"):
+            joined_store.get_sql(metrics=["revenue", "total_sessions"], dimensions=["device_type"])
 
 
 EVENTS_YAML = """

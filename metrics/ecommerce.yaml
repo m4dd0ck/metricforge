@@ -222,6 +222,13 @@ metrics:
       numerator: cancelled_orders
       denominator: total_orders
 
+  - name: revenue_per_session
+    description: "Completed-order revenue per website session (spans orders and sessions)"
+    type: ratio
+    type_params:
+      numerator: revenue
+      denominator: total_sessions
+
   # Cumulative Metrics - running totals
   - name: cumulative_revenue
     description: "Running total of revenue"

@@ -215,13 +215,48 @@ def two_model_registry(tmp_path: Path) -> MetricRegistry:
 
 
 class TestSQLCompilerMultiModel:
-    def test_metrics_on_two_models_raise(self, two_model_registry: MetricRegistry):
-        """Metrics from different tables cannot be compiled into one query."""
+    def test_metrics_on_two_models_are_joined(self, two_model_registry: MetricRegistry):
+        """Metrics from different tables become one aggregate per model, joined afterwards."""
         compiler = SQLCompiler(two_model_registry)
-        query = MetricQuery(metrics=["revenue", "total_sessions"])
+        sql = compiler.compile(MetricQuery(metrics=["revenue", "total_sessions"]))
 
-        with pytest.raises(MultiModelQueryError, match="'orders'.*'sessions'"):
-            compiler.compile(query)
+        assert "WITH orders_q AS" in sql
+        assert "sessions_q AS" in sql
+        assert "CROSS JOIN sessions_q" in sql  # no dimensions: one row each side
+        assert "orders_q.revenue AS revenue" in sql
+        assert "sessions_q.total_sessions AS total_sessions" in sql
+
+    def test_dimensions_key_a_full_outer_join(self, two_model_registry: MetricRegistry):
+        """Each model groups by the dimension and the outer query joins on it."""
+        compiler = SQLCompiler(two_model_registry)
+        query = MetricQuery(
+            metrics=["revenue", "total_sessions"], dimensions=["order_date"], time_grain="month"
+        )
+        sql = " ".join(compiler.compile(query).split())
+
+        assert "FULL OUTER JOIN sessions_q ON orders_q.order_date IS NOT DISTINCT FROM" in sql
+        assert "COALESCE(orders_q.order_date, sessions_q.order_date) AS order_date" in sql
+
+    def test_time_axis_falls_back_to_each_models_own_time_dimension(
+        self, two_model_registry: MetricRegistry
+    ):
+        """sessions has no order_date, so its CTE buckets session_date under that name."""
+        compiler = SQLCompiler(two_model_registry)
+        query = MetricQuery(
+            metrics=["revenue", "total_sessions"], dimensions=["order_date"], time_grain="month"
+        )
+        sql = compiler.compile(query)
+
+        assert "DATE_TRUNC('MONTH', order_date) AS order_date" in sql
+        assert "DATE_TRUNC('MONTH', session_date) AS order_date" in sql
+
+    def test_ratio_spanning_two_models_divides_the_joined_columns(
+        self, two_model_registry: MetricRegistry
+    ):
+        compiler = SQLCompiler(two_model_registry)
+        sql = " ".join(compiler.compile(MetricQuery(metrics=["revenue_per_session"])).split())
+
+        assert "( orders_q.revenue ) * 1.0 / NULLIF(( sessions_q.total_sessions ), 0)" in sql
 
     def test_dimension_from_other_model_raises(self, two_model_registry: MetricRegistry):
         """A dimension that lives on a different table than the metric is refused."""
@@ -231,12 +266,38 @@ class TestSQLCompilerMultiModel:
         with pytest.raises(MultiModelQueryError, match="'orders'.*'sessions'"):
             compiler.compile(query)
 
-    def test_ratio_spanning_two_models_raises(self, two_model_registry: MetricRegistry):
-        """Ratio and derived metrics whose inputs span tables are refused."""
+    def test_categorical_dimension_must_be_on_every_joined_model(
+        self, two_model_registry: MetricRegistry
+    ):
         compiler = SQLCompiler(two_model_registry)
-        query = MetricQuery(metrics=["revenue_per_session"])
+        query = MetricQuery(metrics=["revenue", "total_sessions"], dimensions=["traffic_source"])
 
-        with pytest.raises(MultiModelQueryError, match="revenue_per_session"):
+        with pytest.raises(MultiModelQueryError, match="not declared by 'orders'"):
+            compiler.compile(query)
+
+    def test_unknown_dimension_cannot_key_a_join(self, two_model_registry: MetricRegistry):
+        compiler = SQLCompiler(two_model_registry)
+        query = MetricQuery(metrics=["revenue", "total_sessions"], dimensions=["nope"])
+
+        with pytest.raises(MultiModelQueryError, match="not declared by any semantic model"):
+            compiler.compile(query)
+
+    def test_joined_model_without_time_dimension_cannot_align(
+        self, two_model_registry: MetricRegistry
+    ):
+        compiler = SQLCompiler(two_model_registry)
+        query = MetricQuery(
+            metrics=["completed_revenue", "total_sessions"], dimensions=["session_date"]
+        )
+
+        with pytest.raises(NoTimeDimensionError, match="'completed_orders_view' has no time"):
+            compiler.compile(query)
+
+    def test_filter_must_apply_to_every_joined_model(self, two_model_registry: MetricRegistry):
+        compiler = SQLCompiler(two_model_registry)
+        query = MetricQuery(metrics=["revenue", "total_sessions"], filters=["country = 'US'"])
+
+        with pytest.raises(MultiModelQueryError, match="'country'.*'sessions' does not declare"):
             compiler.compile(query)
 
     def test_models_sharing_a_table_compile(self, two_model_registry: MetricRegistry):
@@ -252,7 +313,7 @@ class TestSQLCompilerMultiModel:
         """Existing callers that catch ValueError keep working."""
         compiler = SQLCompiler(two_model_registry)
         with pytest.raises(ValueError):
-            compiler.compile(MetricQuery(metrics=["revenue", "total_sessions"]))
+            compiler.compile(MetricQuery(metrics=["revenue"], dimensions=["traffic_source"]))
 
 
 class TestSQLCompilerCumulative:

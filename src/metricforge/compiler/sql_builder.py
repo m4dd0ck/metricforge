@@ -1,10 +1,14 @@
 """SQL compiler for metric queries."""
 
-import re
-from dataclasses import dataclass, field
-
 import sqlglot
 
+from metricforge.compiler.resolved import (
+    MultiModelQueryError,
+    NoTimeDimensionError,
+    ResolvedMetric,
+    WindowGrainError,
+    _and,
+)
 from metricforge.models.metric import (
     TIME_UNITS,
     CumulativeMetricParams,
@@ -17,43 +21,20 @@ from metricforge.models.metric import (
 from metricforge.models.query import MetricQuery
 from metricforge.models.semantic_model import (
     AggregationType,
+    Dimension,
     DimensionType,
     Measure,
     SemanticModel,
 )
+
+__all__ = [
+    "MultiModelQueryError",
+    "NoTimeDimensionError",
+    "ResolvedMetric",
+    "SQLCompiler",
+    "WindowGrainError",
+]
 from metricforge.parser.loader import MetricRegistry
-
-
-class MultiModelQueryError(ValueError):
-    """Raised when one query needs metrics or dimensions from more than one table."""
-
-
-class NoTimeDimensionError(ValueError):
-    """Raised when a query needs a time axis (date range, trailing window) and has none."""
-
-
-class WindowGrainError(ValueError):
-    """Raised when a cumulative window is finer than the grain the query groups by."""
-
-
-def _and(*parts: str | None) -> str | None:
-    """Combine SQL boolean fragments with AND, skipping empties."""
-    present = [p for p in parts if p]
-    if not present:
-        return None
-    return present[0] if len(present) == 1 else " AND ".join(f"({p})" for p in present)
-
-
-@dataclass
-class ResolvedMetric:
-    """A metric resolved to its SQL components."""
-
-    name: str
-    expr: str  # the sql expression for this metric
-    model: SemanticModel | None  # which model this comes from (for table lookup)
-    filter: str | None = None
-    is_aggregate: bool = True  # false for derived/ratio which wrap aggregates
-    sub_metrics: dict[str, "ResolvedMetric"] = field(default_factory=dict)
 
 
 class SQLCompiler:
@@ -73,19 +54,29 @@ class SQLCompiler:
         self.dialect = dialect  # passed to sqlglot for formatting
 
     def compile(self, query: MetricQuery) -> str:
-        """Convert a MetricQuery into SQL."""
-        resolved_metrics = self._resolve_metrics(query)
-        models = self._get_required_models(resolved_metrics, query.dimensions)
+        """Convert a MetricQuery into SQL.
 
-        select_exprs = self._build_select_exprs(resolved_metrics, query)
-        from_clause = self._build_from_clause(models, query)
+        Metrics on one table compile to a single SELECT. Metrics spanning tables compile to
+        one aggregate per model, joined on the query's dimensions (see ``joined.py``).
+        """
+        models = self._models_for_query(query)
+        is_joined = len({model.get_table_name() for model in models}) > 1
+        self._check_dimensions(query, models, is_joined)
+        resolved_metrics = self._resolve_metrics(query)
+
+        if is_joined:
+            from metricforge.compiler.joined import JoinedQueryBuilder
+
+            return self._format_sql(JoinedQueryBuilder(self).build(query, resolved_metrics, models))
+
+        select_exprs = self._build_select_exprs(resolved_metrics, query, models)
         where_conditions = self._build_where_conditions(query, models)
-        group_by_exprs = self._build_group_by_exprs(query)
-        order_by_exprs = self._build_order_by_exprs(query)
+        group_by_exprs = self._build_group_by_exprs(query, models)
+        order_by_exprs = self._build_order_by_exprs(query, models)
 
         sql = self._assemble_query(
             select_exprs=select_exprs,
-            from_clause=from_clause,
+            from_clause=models[0].get_table_name(),
             where_conditions=where_conditions,
             group_by_exprs=group_by_exprs,
             order_by_exprs=order_by_exprs,
@@ -93,6 +84,79 @@ class SQLCompiler:
         )
 
         return self._format_sql(sql)
+
+    # -- which models a query touches ---------------------------------------------------------
+
+    def _models_for_query(self, query: MetricQuery) -> list[SemanticModel]:
+        """The semantic models the query's metrics read from, in first-seen order."""
+        models: dict[str, SemanticModel] = {}
+        for name in query.metrics:
+            for model in self._models_of_metric(self.registry.get_metric(name)):
+                models.setdefault(model.name, model)
+        if not models:
+            raise ValueError("No tables found for query")
+        return list(models.values())
+
+    def _models_of_metric(self, metric: Metric) -> list[SemanticModel]:
+        params = metric.type_params
+        if isinstance(params, SimpleMetricParams | CumulativeMetricParams):
+            return [self.registry.get_model_for_measure(params.measure)]
+        if isinstance(params, RatioMetricParams):
+            referenced = [params.numerator, params.denominator]
+        else:
+            referenced = params.metrics
+        models: list[SemanticModel] = []
+        for name in referenced:
+            models.extend(self._models_of_metric(self.registry.get_metric(name)))
+        return models
+
+    def _check_dimensions(
+        self, query: MetricQuery, models: list[SemanticModel], is_joined: bool
+    ) -> None:
+        """Every dimension must be declared by the query's models.
+
+        On one table an unknown name passes through as a raw column. Across tables every
+        name must be declared: categorical dimensions by every model (they key the join),
+        time dimensions by at least one (the others fall back to their own time dimension).
+
+        Raises:
+            MultiModelQueryError: If a dimension is missing from the models that need it.
+            NoTimeDimensionError: If a joined model has no time dimension to align on.
+        """
+        model_names = ", ".join(f"'{m.name}'" for m in models)
+        for dim_name in query.dimensions:
+            try:
+                dimension = self.registry.get_dimension(dim_name)
+            except KeyError:
+                if is_joined:
+                    raise MultiModelQueryError(
+                        f"Dimension '{dim_name}' is not declared by any semantic model, so it "
+                        f"cannot key the join across {model_names}."
+                    ) from None
+                continue
+
+            missing = [m for m in models if m.get_dimension(dim_name) is None]
+            if len(missing) == len(models):
+                owner = self.registry.get_model_for_dimension(dim_name).name
+                raise MultiModelQueryError(
+                    f"Dimension '{dim_name}' is not declared by {model_names}; it is on '{owner}'."
+                )
+            if not is_joined or not missing:
+                continue
+            if dimension.type == DimensionType.CATEGORICAL:
+                raise MultiModelQueryError(
+                    f"Dimension '{dim_name}' is not declared by "
+                    f"{', '.join(repr(m.name) for m in missing)}. A query across models can "
+                    "only group by dimensions every model declares (time dimensions fall back "
+                    "to each model's own)."
+                )
+            for model in missing:
+                if self._first_time_dimension(model) is None:
+                    raise NoTimeDimensionError(
+                        f"Model '{model.name}' has no time dimension to align with '{dim_name}'."
+                    )
+
+    # -- metric resolution ----------------------------------------------------------------------
 
     def _resolve_metrics(self, query: MetricQuery) -> dict[str, ResolvedMetric]:
         resolved = {}
@@ -144,23 +208,17 @@ class SQLCompiler:
             ref_metric = self.registry.get_metric(ref_name)
             sub_metrics[ref_name] = self._resolve_single_metric(ref_metric, query, combined)
 
-        # Reason: one pass over the original text, matching whole words longest-first.
-        # str.replace mangled names that were substrings of other names or that appeared
-        # inside already-substituted SQL (e.g. a metric called "amount").
-        names = sorted(sub_metrics, key=len, reverse=True)
-        pattern = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
-        expr = pattern.sub(lambda m: f"({sub_metrics[m.group(0)].expr})", params.expr)
-
-        model = next(iter(sub_metrics.values())).model if sub_metrics else None
-
-        return ResolvedMetric(
+        resolved = ResolvedMetric(
             name=metric.name,
-            expr=expr,
-            model=model,
+            expr="",
+            model=next(iter(sub_metrics.values())).model if sub_metrics else None,
             filter=metric.filter,
             is_aggregate=False,  # derived metrics wrap aggregates, not aggregates themselves
             sub_metrics=sub_metrics,
+            template=params.expr,
         )
+        resolved.expr = resolved.render(lambda leaf: leaf.expr)
+        return resolved
 
     def _resolve_ratio_metric(
         self, metric: Metric, query: MetricQuery, extra_filter: str | None = None
@@ -175,17 +233,18 @@ class SQLCompiler:
         num_resolved = self._resolve_single_metric(numerator_metric, query, combined)
         denom_resolved = self._resolve_single_metric(denominator_metric, query, combined)
 
-        # NULLIF for division-by-zero, 1.0 for float division
-        expr = f"({num_resolved.expr}) * 1.0 / NULLIF({denom_resolved.expr}, 0)"
-
-        return ResolvedMetric(
+        resolved = ResolvedMetric(
             name=metric.name,
-            expr=expr,
+            expr="",
             model=num_resolved.model,
             filter=metric.filter,
             is_aggregate=False,
             sub_metrics={params.numerator: num_resolved, params.denominator: denom_resolved},
+            # NULLIF for division-by-zero, 1.0 for float division
+            template=f"{params.numerator} * 1.0 / NULLIF({params.denominator}, 0)",
         )
+        resolved.expr = resolved.render(lambda leaf: leaf.expr)
+        return resolved
 
     def _resolve_cumulative_metric(
         self, metric: Metric, query: MetricQuery, extra_filter: str | None = None
@@ -196,7 +255,7 @@ class SQLCompiler:
         measure = self.registry.get_measure(params.measure)
 
         base_expr = self._build_measure_expr(measure, _and(metric.filter, extra_filter))
-        window = self._build_cumulative_window(query, params, metric.name)
+        window = self._build_cumulative_window(query, params, metric.name, model)
         # Reason: without a time axis there is one bucket, so the running total is the total
         expr = f"SUM({base_expr}) {window}" if window else base_expr
 
@@ -209,7 +268,11 @@ class SQLCompiler:
         )
 
     def _build_cumulative_window(
-        self, query: MetricQuery, params: CumulativeMetricParams, metric_name: str
+        self,
+        query: MetricQuery,
+        params: CumulativeMetricParams,
+        metric_name: str,
+        model: SemanticModel,
     ) -> str | None:
         """Build the OVER clause for a cumulative metric, or None if the query has no time axis.
 
@@ -227,9 +290,9 @@ class SQLCompiler:
                 )
             return None
 
-        order_expr = self._build_dimension_expr(time_dim, query.time_grain)
+        order_expr = self._dimension_expr(time_dim, query.time_grain, [model])
         partitions = [
-            self._build_dimension_expr(dim, query.time_grain)
+            self._dimension_expr(dim, query.time_grain, [model])
             for dim in query.dimensions
             if dim != time_dim
         ]
@@ -289,79 +352,73 @@ class SQLCompiler:
 
         return f"{agg_func}({col_expr})"
 
-    def _get_required_models(
-        self, resolved_metrics: dict[str, ResolvedMetric], dimensions: list[str]
-    ) -> list[SemanticModel]:
-        """Get the semantic models the query touches, in first-seen order."""
-        models: dict[str, SemanticModel] = {}
+    # -- dimensions -----------------------------------------------------------------------------
 
-        def add(model: SemanticModel | None) -> None:
-            if model is not None:
-                models.setdefault(model.name, model)
+    def _dimension_expr(
+        self, dim_name: str, time_grain: str | None, models: list[SemanticModel]
+    ) -> str:
+        """SQL for a dimension as these models see it.
 
-        for resolved in resolved_metrics.values():
-            add(resolved.model)
-            # also check sub-metrics for derived/ratio
-            for sub in resolved.sub_metrics.values():
-                add(sub.model)
+        The first model declaring the name wins. A time dimension none of them declares falls
+        back to the first model's own time dimension (the models were checked for one). A name
+        no model knows passes through as a raw column.
+        """
+        dimension = self._dimension_on(models, dim_name)
+        if dimension is None:
+            return dim_name
 
+        col_expr = dimension.expr or dimension.name
+        # time dimensions can be truncated to different grains
+        if dimension.type == DimensionType.TIME and time_grain:
+            return f"DATE_TRUNC('{time_grain}', {col_expr})"
+        return col_expr
+
+    def _dimension_on(self, models: list[SemanticModel], dim_name: str) -> Dimension | None:
+        for model in models:
+            dimension = model.get_dimension(dim_name)
+            if dimension is not None:
+                return dimension
+        if self._is_time_dimension(dim_name):
+            for model in models:
+                fallback = self._first_time_dimension(model)
+                if fallback is not None:
+                    return fallback
+        return None
+
+    @staticmethod
+    def _first_time_dimension(model: SemanticModel) -> Dimension | None:
+        return next((d for d in model.dimensions if d.type == DimensionType.TIME), None)
+
+    def _is_time_dimension(self, dim_name: str) -> bool:
+        try:
+            return self.registry.get_dimension(dim_name).type == DimensionType.TIME
+        except KeyError:
+            return False
+
+    def _find_time_dimension(self, dimensions: list[str]) -> str | None:
         for dim_name in dimensions:
-            try:
-                add(self.registry.get_model_for_dimension(dim_name))
-            except KeyError:
-                pass  # dimension might be in a filter, not a semantic model
+            if self._is_time_dimension(dim_name):
+                return dim_name
+        return None
 
-        return list(models.values())
+    # -- clauses --------------------------------------------------------------------------------
 
     def _build_select_exprs(
-        self, resolved_metrics: dict[str, ResolvedMetric], query: MetricQuery
+        self,
+        resolved_metrics: dict[str, ResolvedMetric],
+        query: MetricQuery,
+        models: list[SemanticModel],
     ) -> list[str]:
         exprs = []
 
         for dim_name in query.dimensions:
-            dim_expr = self._build_dimension_expr(dim_name, query.time_grain)
+            dim_expr = self._dimension_expr(dim_name, query.time_grain, models)
             exprs.append(f"{dim_expr} AS {dim_name}")
 
         for metric_name, resolved in resolved_metrics.items():
             exprs.append(f"{resolved.expr} AS {metric_name}")
 
         return exprs
-
-    def _build_dimension_expr(self, dim_name: str, time_grain: str | None) -> str:
-        """Build SQL expression for a dimension."""
-        try:
-            dimension = self.registry.get_dimension(dim_name)
-            col_expr = dimension.expr or dim_name
-
-            # time dimensions can be truncated to different grains
-            if dimension.type == DimensionType.TIME and time_grain:
-                return f"DATE_TRUNC('{time_grain}', {col_expr})"
-
-            return col_expr
-        except KeyError:
-            return dim_name
-
-    def _build_from_clause(self, models: list[SemanticModel], query: MetricQuery) -> str:
-        """Build the FROM clause; every model in the query must map to the same table.
-
-        Raises:
-            MultiModelQueryError: If the metrics or dimensions span more than one table.
-        """
-        tables = list(dict.fromkeys(model.get_table_name() for model in models))
-        if not tables:
-            raise ValueError("No tables found for query")
-        if len(tables) > 1:
-            model_names = [f"'{model.name}'" for model in models]
-            requested = ", ".join(f"'{name}'" for name in query.metrics)
-            if query.dimensions:
-                requested += " by " + ", ".join(f"'{name}'" for name in query.dimensions)
-            raise MultiModelQueryError(
-                f"Query for {requested} spans semantic models "
-                f"{', '.join(model_names[:-1])} and {model_names[-1]}. "
-                "MetricForge compiles single-table queries, so query one model at a time."
-            )
-
-        return tables[0]
 
     def _build_where_conditions(self, query: MetricQuery, models: list[SemanticModel]) -> list[str]:
         """Build WHERE conditions.
@@ -376,7 +433,7 @@ class SQLCompiler:
             time_dim = self._find_time_dimension(query.dimensions) or self._model_time_dimension(
                 models, query
             )
-            col_expr = self.registry.get_dimension(time_dim).expr or time_dim
+            col_expr = self._dimension_expr(time_dim, None, models)
 
             if query.start_date:
                 conditions.append(f"{col_expr} >= DATE '{query.start_date}'")
@@ -389,9 +446,9 @@ class SQLCompiler:
     def _model_time_dimension(self, models: list[SemanticModel], query: MetricQuery) -> str:
         """The first time dimension declared by the query's model, for date-range fallback."""
         for model in models:
-            for dim in model.dimensions:
-                if dim.type == DimensionType.TIME:
-                    return dim.name
+            first = self._first_time_dimension(model)
+            if first is not None:
+                return first.name
         names = ", ".join(f"'{m.name}'" for m in models) or "the query"
         requested = ", ".join(f"'{name}'" for name in query.metrics)
         raise NoTimeDimensionError(
@@ -399,35 +456,13 @@ class SQLCompiler:
             "add one or drop the date range."
         )
 
-    def _find_time_dimension(self, dimensions: list[str]) -> str | None:
-        for dim_name in dimensions:
-            try:
-                dim = self.registry.get_dimension(dim_name)
-                if dim.type == DimensionType.TIME:
-                    return dim_name
-            except KeyError:
-                pass
-        return None
+    def _build_group_by_exprs(self, query: MetricQuery, models: list[SemanticModel]) -> list[str]:
+        return [self._dimension_expr(d, query.time_grain, models) for d in query.dimensions]
 
-    def _build_group_by_exprs(self, query: MetricQuery) -> list[str]:
-        if not query.dimensions:
-            return []
-
-        exprs = []
-        for dim_name in query.dimensions:
-            dim_expr = self._build_dimension_expr(dim_name, query.time_grain)
-            exprs.append(dim_expr)
-
-        return exprs
-
-    def _build_order_by_exprs(self, query: MetricQuery) -> list[str]:
+    def _build_order_by_exprs(self, query: MetricQuery, models: list[SemanticModel]) -> list[str]:
         if query.order_by:
             return query.order_by
-
-        if query.dimensions:
-            return [self._build_dimension_expr(d, query.time_grain) for d in query.dimensions]
-
-        return []
+        return self._build_group_by_exprs(query, models)
 
     def _assemble_query(
         self,
