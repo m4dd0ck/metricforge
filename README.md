@@ -5,7 +5,8 @@ Define metrics in YAML, query them via Python or CLI. DuckDB backend.
 ## Features
 
 - **YAML-based metric definitions** - Version-controlled, human-readable metric DSL
-- **4 metric types** - Simple, derived, ratio, and cumulative metrics
+- **4 metric types** - Simple, derived, ratio, and cumulative (running total, to-date, trailing window)
+- **Queries across tables** - Metrics from different semantic models are aggregated separately and joined on shared dimensions
 - **Time grain support** - Automatic DATE_TRUNC for day/week/month/quarter/year
 - **SQL transparency** - Always see the generated SQL
 - **DuckDB backend** - Fast, embedded OLAP database
@@ -49,6 +50,9 @@ uv run mf query revenue,completed_orders --dir metrics/ --db data/metricforge.du
 
 # With time grain
 uv run mf query revenue --dir metrics/ --db data/metricforge.duckdb --dimensions order_date --grain month
+
+# Metrics from two tables (orders and sessions), joined by month
+uv run mf query revenue,total_sessions,revenue_per_session --dir metrics/ --db data/metricforge.duckdb --dimensions order_date --grain month
 
 # Show SQL without executing
 uv run mf show-sql revenue,average_order_value --dir metrics/ --dimensions country
@@ -135,6 +139,13 @@ metrics:
     type: cumulative
     type_params:
       measure: order_amount
+
+  # Trailing window: the last 7 days ending at each bucket
+  - name: revenue_7d
+    type: cumulative
+    type_params:
+      measure: order_amount
+      window: 7 days
 ```
 
 ## CLI Commands
@@ -144,7 +155,7 @@ metrics:
 | `mf list metrics` | List all defined metrics |
 | `mf list dimensions` | List all dimensions |
 | `mf list measures` | List all measures |
-| `mf query <metrics>` | Query metrics with optional dimensions |
+| `mf query <metrics>` | Query metrics with optional dimensions; `-o csv` writes RFC 4180 CSV |
 | `mf show-sql <metrics>` | Show generated SQL |
 | `mf validate` | Validate metric definitions |
 
@@ -184,12 +195,46 @@ every metric it references.
 ```
 
 `SQLCompiler` assembles the SELECT / FROM / WHERE / GROUP BY clauses as strings. SQLGlot
-is only used afterwards to parse and pretty-print the result (falling back to the raw string
-if parsing fails); it does not build or validate the query.
+is used afterwards to parse and pretty-print the result (falling back to the raw string
+if parsing fails), and to read the column names in raw filters; it does not build the query.
 
-Every query compiles to a single `FROM <table>`. All metrics and dimensions in one query must
-resolve to the same semantic model table; otherwise `compile()` raises `MultiModelQueryError`
-naming the models involved. There is no join support yet, so query each model separately.
+### Queries across tables
+
+Metrics on one table compile to a single `SELECT ... FROM <table>`. When the metrics in a
+query come from semantic models on different tables, each model is aggregated on its own
+(a CTE grouped by the query's dimensions) and the aggregates are `FULL OUTER JOIN`ed on
+those dimensions. Aggregating first means no fan-out: `revenue / total_sessions` by country
+is each country's revenue over its sessions, and a country with sessions but no orders
+still appears, with `NULL` revenue.
+
+```sql
+WITH orders_q AS (
+  SELECT country AS country, SUM(CASE WHEN status = 'completed' THEN amount END) AS revenue
+  FROM orders GROUP BY country
+), sessions_q AS (
+  SELECT country AS country, COUNT(session_id) AS total_sessions
+  FROM sessions GROUP BY country
+)
+SELECT
+  COALESCE(orders_q.country, sessions_q.country) AS country,
+  orders_q.revenue AS revenue,
+  (orders_q.revenue) * 1.0 / NULLIF((sessions_q.total_sessions), 0) AS revenue_per_session
+FROM orders_q
+FULL OUTER JOIN sessions_q ON orders_q.country IS NOT DISTINCT FROM sessions_q.country
+ORDER BY country
+```
+
+The rules, each checked before any SQL runs (`MultiModelQueryError` / `NoTimeDimensionError`):
+
+- A categorical dimension must be declared, under the same name, by every model in the
+  query; it is the join key. Declaring `country` on both `orders` and `sessions` is how
+  you say they mean the same thing.
+- A time dimension names the axis. A model that does not declare it contributes its own
+  first time dimension under that name, so `revenue, total_sessions` by `order_date` buckets
+  sessions by `session_date`.
+- A raw `--filter` is pushed into every model's aggregate, so it may only reference columns
+  every model declares. A filter that belongs to one table goes on the metric definition.
+- Joins through foreign keys to dimension tables (`customer.region`) are not supported.
 
 ## Project Structure
 
@@ -220,11 +265,22 @@ uv run pytest tests/ -v
 | **simple** | Single measure aggregation | `SUM(amount)`, `COUNT(*)` |
 | **derived** | Calculation from other metrics | `revenue / orders` |
 | **ratio** | Two metrics as numerator/denominator | `completed / total` |
-| **cumulative** | Running total over the queried time dimension; `grain_to_date: month` restarts it each month | Month-to-date revenue |
+| **cumulative** | Running total over the queried time dimension; `grain_to_date: month` restarts it each month; `window: 7 days` makes it a trailing total | Month-to-date revenue, 7-day revenue |
 
 Cumulative metrics compile to `SUM(<aggregate>) OVER (PARTITION BY <other dimensions>
 ORDER BY <time dimension> ROWS UNBOUNDED PRECEDING)`. Without a time dimension in the query
-they return the plain total.
+a running total returns the plain total.
+
+A `window` (`<count> <day|week|month|quarter|year>`) turns the frame into
+`RANGE BETWEEN (INTERVAL <window> - INTERVAL 1 <grain>) PRECEDING AND CURRENT ROW`: the window
+covers calendar time ending at the current bucket, so `7 days` by day is seven buckets even
+when days are missing, and `1 month` by week is four weeks. A window finer than the query's
+grain (`7 days` by month) is refused, and a windowed metric needs a time dimension in the
+query. `window` and `grain_to_date` are mutually exclusive.
+
+The date range (`--start`/`--end`) filters rows before aggregation, so a running total starts
+at `--start` and the first buckets of a trailing window inside the range are partial. Drop
+`--start` to see the all-time total.
 
 ## Aggregation Types
 
