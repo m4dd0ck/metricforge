@@ -17,7 +17,6 @@ class MetricQuery(BaseModel):
     end_date: date | None = None
     limit: int | None = None
     order_by: list[str] = Field(default_factory=list)
-    # TODO: could add having clause for filtering on aggregated values
 
 
 class QueryResult(BaseModel):
