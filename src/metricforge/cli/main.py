@@ -1,6 +1,8 @@
 """CLI for MetricForge."""
 
+import csv
 import json
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -187,17 +189,22 @@ def query(
     _output_result(result, output)
 
 
+def _csv_cell(value: object) -> str:
+    """CSV text for one value; NULL is an empty field."""
+    return "" if value is None else str(value)
+
+
 def _output_result(result: QueryResult, output_format: str) -> None:
     """Output query result in the specified format."""
     if output_format == "json":
         console.print(json.dumps(result.data, indent=2, default=str))
     elif output_format == "csv":
-        # TODO: use csv module for proper escaping
-        if result.data:
-            console.print(",".join(result.columns))
-            for row in result.data:
-                values = [str(row.get(c, "")) for c in result.columns]
-                console.print(",".join(values))
+        # Reason: written straight to stdout, not through rich, so commas and quotes in
+        # values are escaped and nothing in the data is read as console markup
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(result.columns)
+        for row in result.data:
+            writer.writerow([_csv_cell(row.get(c)) for c in result.columns])
     else:
         table = Table(
             title=f"Query Results ({result.row_count} rows, {result.execution_time_ms}ms)"

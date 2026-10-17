@@ -2,9 +2,11 @@
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
-from metricforge.cli.main import app
+from metricforge.cli.main import _output_result, app
+from metricforge.models.query import QueryResult
 
 runner = CliRunner()
 
@@ -151,3 +153,36 @@ class TestCLIHelp:
         """Show-sql command help works."""
         result = runner.invoke(app, ["show-sql", "--help"])
         assert result.exit_code == 0
+
+
+class TestCSVOutput:
+    def _result(self, rows: list[dict[str, object]]) -> QueryResult:
+        return QueryResult(
+            sql="SELECT 1",
+            columns=["country", "revenue"],
+            data=rows,
+            row_count=len(rows),
+            execution_time_ms=0.1,
+        )
+
+    def test_csv_escapes_commas_and_quotes(self, capsys: pytest.CaptureFixture[str]):
+        """Values holding commas or quotes are quoted the way the csv module does it."""
+        _output_result(self._result([{"country": 'Côte, d"Ivoire', "revenue": 10}]), "csv")
+
+        assert capsys.readouterr().out == 'country,revenue\n"Côte, d""Ivoire",10\n'
+
+    def test_csv_does_not_treat_values_as_markup(self, capsys: pytest.CaptureFixture[str]):
+        """A value that looks like rich markup is printed as-is."""
+        _output_result(self._result([{"country": "[red]US[/red]", "revenue": 1}]), "csv")
+
+        assert "[red]US[/red]" in capsys.readouterr().out
+
+    def test_csv_prints_header_for_empty_result(self, capsys: pytest.CaptureFixture[str]):
+        _output_result(self._result([]), "csv")
+
+        assert capsys.readouterr().out == "country,revenue\n"
+
+    def test_csv_null_is_empty_field(self, capsys: pytest.CaptureFixture[str]):
+        _output_result(self._result([{"country": None, "revenue": None}]), "csv")
+
+        assert capsys.readouterr().out.splitlines()[1] == ","
