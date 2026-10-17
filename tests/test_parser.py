@@ -193,3 +193,50 @@ metrics:
         registry = MetricRegistry()
         with pytest.raises(ValueError, match="references unknown metric"):
             registry.load_directory(metrics_path)
+
+
+SHARED_DIMENSION_YAML = """
+semantic_models:
+  - name: orders
+    table: orders
+    primary_entity: order_id
+    measures:
+      - {name: order_amount, agg: sum, expr: amount}
+    dimensions:
+      - {name: country, type: categorical}
+  - name: sessions
+    table: sessions
+    primary_entity: session_id
+    measures:
+      - {name: session_count, agg: count, expr: session_id}
+    dimensions:
+      - {name: country, type: %s}
+"""
+
+
+class TestSharedDimensionNames:
+    def _load(self, tmp_path: Path, second_type: str) -> MetricRegistry:
+        metrics_dir = tmp_path / "metrics"
+        metrics_dir.mkdir()
+        (metrics_dir / "m.yaml").write_text(SHARED_DIMENSION_YAML % second_type)
+        registry = MetricRegistry()
+        registry.load_directory(metrics_dir)
+        return registry
+
+    def test_same_name_on_two_models_is_allowed(self, tmp_path: Path):
+        """A dimension declared by several models is the key that joins them."""
+        registry = self._load(tmp_path, "categorical")
+
+        assert [m.name for m in registry.get_models_for_dimension("country")] == [
+            "orders",
+            "sessions",
+        ]
+        assert registry.get_model_for_dimension("country").name == "orders"
+
+    def test_same_name_with_different_types_is_rejected(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="'country' is categorical in model 'orders' but time"):
+            self._load(tmp_path, "time")
+
+    def test_unknown_dimension_raises(self, registry: MetricRegistry):
+        with pytest.raises(KeyError, match="Unknown dimension"):
+            registry.get_models_for_dimension("nope")

@@ -24,7 +24,9 @@ class MetricRegistry:
         # reverse indexes for looking up which model contains a measure/dimension
         # built after loading to avoid circular dependency issues
         self._measure_to_model: dict[str, str] = {}  # measure_name -> model_name
-        self._dimension_to_model: dict[str, str] = {}  # dimension_name -> model_name
+        # Reason: the same dimension name on several models is the join key between them,
+        # so this keeps every model that declares it, in load order
+        self._dimension_to_models: dict[str, list[str]] = {}
 
     def load_directory(self, path: Path) -> None:
         """Load all YAML files from a directory recursively."""
@@ -101,12 +103,18 @@ class MetricRegistry:
                 self._measure_to_model[measure.name] = model_name
 
             for dimension in model.dimensions:
-                if dimension.name in self._dimension_to_model:
-                    raise ValueError(
-                        f"Duplicate dimension name '{dimension.name}' in models "
-                        f"'{self._dimension_to_model[dimension.name]}' and '{model_name}'"
-                    )
-                self._dimension_to_model[dimension.name] = model_name
+                self._index_dimension(dimension, model_name)
+
+    def _index_dimension(self, dimension: Dimension, model_name: str) -> None:
+        """Record which models declare a dimension; shared names must agree on the type."""
+        for other_name in self._dimension_to_models.get(dimension.name, []):
+            other = self.semantic_models[other_name].get_dimension(dimension.name)
+            if other is not None and other.type != dimension.type:
+                raise ValueError(
+                    f"Dimension '{dimension.name}' is {other.type.value} in model "
+                    f"'{other_name}' but {dimension.type.value} in '{model_name}'"
+                )
+        self._dimension_to_models.setdefault(dimension.name, []).append(model_name)
 
     def _validate_references(self) -> None:
         """Ensure all metric references are valid."""
@@ -174,10 +182,15 @@ class MetricRegistry:
         return self.semantic_models[model_name]
 
     def get_model_for_dimension(self, dimension_name: str) -> SemanticModel:
-        model_name = self._dimension_to_model.get(dimension_name)
-        if not model_name:
+        """The first model that declares a dimension (see ``get_models_for_dimension``)."""
+        return self.get_models_for_dimension(dimension_name)[0]
+
+    def get_models_for_dimension(self, dimension_name: str) -> list[SemanticModel]:
+        """Every model that declares a dimension, in load order."""
+        model_names = self._dimension_to_models.get(dimension_name)
+        if not model_names:
             raise KeyError(f"Unknown dimension: {dimension_name}")
-        return self.semantic_models[model_name]
+        return [self.semantic_models[name] for name in model_names]
 
     def get_measure(self, measure_name: str) -> Measure:
         model = self.get_model_for_measure(measure_name)
