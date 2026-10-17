@@ -8,6 +8,7 @@ from metricforge.compiler.sql_builder import (
     MultiModelQueryError,
     NoTimeDimensionError,
     SQLCompiler,
+    WindowGrainError,
 )
 from metricforge.models.query import MetricQuery
 from metricforge.parser.loader import MetricRegistry
@@ -288,6 +289,56 @@ class TestSQLCompilerCumulative:
 
         assert "OVER" not in sql.upper()
         assert "SUM" in sql.upper()
+
+
+class TestSQLCompilerTrailingWindow:
+    def test_window_is_a_range_frame_ending_at_the_current_bucket(self, registry: MetricRegistry):
+        """A 2-month window at month grain reaches one month back from the current bucket."""
+        compiler = SQLCompiler(registry)
+        query = MetricQuery(
+            metrics=["trailing_revenue"], dimensions=["order_date"], time_grain="month"
+        )
+        sql = " ".join(compiler.compile(query).split())
+
+        assert "ORDER BY DATE_TRUNC('MONTH', order_date) RANGE BETWEEN" in sql
+        assert "INTERVAL '2' MONTH - INTERVAL '1' MONTH ) PRECEDING AND CURRENT ROW" in sql
+        assert "UNBOUNDED" not in sql
+
+    def test_window_at_finer_grain_subtracts_one_bucket(self, registry: MetricRegistry):
+        """Without a query grain the dimension's own day granularity is the bucket."""
+        compiler = SQLCompiler(registry)
+        sql = " ".join(
+            compiler.compile(
+                MetricQuery(metrics=["trailing_revenue"], dimensions=["order_date"])
+            ).split()
+        )
+
+        assert "INTERVAL '2' MONTH - INTERVAL '1' DAY" in sql
+
+    def test_window_finer_than_grain_is_refused(self, registry: MetricRegistry):
+        """A 2-month window cannot be measured along quarterly buckets."""
+        compiler = SQLCompiler(registry)
+        query = MetricQuery(
+            metrics=["trailing_revenue"], dimensions=["order_date"], time_grain="quarter"
+        )
+
+        with pytest.raises(WindowGrainError, match="finer than the query's 'quarter' grain"):
+            compiler.compile(query)
+
+    def test_window_without_time_dimension_is_refused(self, registry: MetricRegistry):
+        """Unlike a running total, a trailing window has no meaning without a time axis."""
+        compiler = SQLCompiler(registry)
+
+        with pytest.raises(NoTimeDimensionError, match="trailing window"):
+            compiler.compile(MetricQuery(metrics=["trailing_revenue"]))
+
+    def test_window_keeps_partitions(self, registry: MetricRegistry):
+        compiler = SQLCompiler(registry)
+        query = MetricQuery(metrics=["trailing_revenue"], dimensions=["country", "order_date"])
+        sql = compiler.compile(query)
+
+        assert "PARTITION BY country" in sql
+        assert "RANGE BETWEEN" in sql
 
 
 OVERLAP_YAML = """

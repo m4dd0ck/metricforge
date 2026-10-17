@@ -245,6 +245,30 @@ class TestMetricStoreCumulative:
             ("2024-03-15", 400),
         ]
 
+    def test_trailing_window_by_month(self, store_with_data: MetricStore):
+        """Each month carries its own revenue plus the month before it."""
+        result = store_with_data.query(
+            metrics=["revenue", "trailing_revenue"],
+            dimensions=["order_date"],
+            time_grain="month",
+        )
+
+        # Completed revenue per month: Jan 325, Feb 550, Mar 400
+        rows = [(row["revenue"], row["trailing_revenue"]) for row in result.data]
+        assert rows == [(325, 325), (550, 875), (400, 950)]
+
+    def test_trailing_window_by_day_counts_calendar_time_not_rows(
+        self, store_with_data: MetricStore
+    ):
+        """The window is two calendar months back from each day, whatever rows exist between."""
+        result = store_with_data.query(metrics=["trailing_revenue"], dimensions=["order_date"])
+
+        totals = {str(row["order_date"])[:10]: row["trailing_revenue"] for row in result.data}
+        # 2024-03-15 reaches back to 2024-01-16, so the 100 on 01-15 has dropped out
+        assert totals["2024-03-15"] == 1175
+        # 2024-03-01 reaches back to 2024-01-02 and still holds every completed order so far
+        assert totals["2024-03-01"] == 875
+
 
 class TestMetricStoreMultiModel:
     def test_cross_model_query_raises(self, tmp_path: Path):
@@ -355,3 +379,8 @@ def test_derived_metric_filter_is_applied(
         assert float(result.data[0]["us_aov"]) == 190.0
     finally:
         store.close()
+
+
+def test_validate_gives_windowed_metrics_a_time_axis(store_with_data: MetricStore) -> None:
+    """A trailing window needs a time dimension, which validate supplies from its model."""
+    assert store_with_data.validate() == []

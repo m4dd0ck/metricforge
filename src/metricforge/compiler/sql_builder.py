@@ -6,11 +6,13 @@ from dataclasses import dataclass, field
 import sqlglot
 
 from metricforge.models.metric import (
+    TIME_UNITS,
     CumulativeMetricParams,
     DerivedMetricParams,
     Metric,
     RatioMetricParams,
     SimpleMetricParams,
+    parse_window,
 )
 from metricforge.models.query import MetricQuery
 from metricforge.models.semantic_model import (
@@ -27,7 +29,11 @@ class MultiModelQueryError(ValueError):
 
 
 class NoTimeDimensionError(ValueError):
-    """Raised when a query has a date range but no time dimension to apply it to."""
+    """Raised when a query needs a time axis (date range, trailing window) and has none."""
+
+
+class WindowGrainError(ValueError):
+    """Raised when a cumulative window is finer than the grain the query groups by."""
 
 
 def _and(*parts: str | None) -> str | None:
@@ -190,7 +196,7 @@ class SQLCompiler:
         measure = self.registry.get_measure(params.measure)
 
         base_expr = self._build_measure_expr(measure, _and(metric.filter, extra_filter))
-        window = self._build_cumulative_window(query, params.grain_to_date)
+        window = self._build_cumulative_window(query, params, metric.name)
         # Reason: without a time axis there is one bucket, so the running total is the total
         expr = f"SUM({base_expr}) {window}" if window else base_expr
 
@@ -202,10 +208,23 @@ class SQLCompiler:
             is_aggregate=False,  # window function, handled differently than aggregates
         )
 
-    def _build_cumulative_window(self, query: MetricQuery, grain_to_date: str | None) -> str | None:
-        """Build the OVER clause for a running total, or None if the query has no time axis."""
+    def _build_cumulative_window(
+        self, query: MetricQuery, params: CumulativeMetricParams, metric_name: str
+    ) -> str | None:
+        """Build the OVER clause for a cumulative metric, or None if the query has no time axis.
+
+        Raises:
+            NoTimeDimensionError: If the metric has a trailing window but the query no time
+                dimension to measure it along.
+            WindowGrainError: If the window unit is finer than the query's grain.
+        """
         time_dim = self._find_time_dimension(query.dimensions)
         if time_dim is None:
+            if params.window:
+                raise NoTimeDimensionError(
+                    f"Cumulative metric '{metric_name}' has a trailing window of "
+                    f"'{params.window}' but the query has no time dimension to apply it along."
+                )
             return None
 
         order_expr = self._build_dimension_expr(time_dim, query.time_grain)
@@ -214,16 +233,45 @@ class SQLCompiler:
             for dim in query.dimensions
             if dim != time_dim
         ]
-        if grain_to_date:
+        if params.grain_to_date:
             # Reason: restarting at each grain boundary turns the running total into
             # a to-date total (e.g. month-to-date); truncating the group key keeps it valid SQL
-            partitions.append(f"DATE_TRUNC('{grain_to_date}', {order_expr})")
+            partitions.append(f"DATE_TRUNC('{params.grain_to_date}', {order_expr})")
+
+        if params.window:
+            grain = self._effective_grain(time_dim, query.time_grain)
+            frame = self._trailing_frame(params.window, grain, metric_name)
+        else:
+            frame = "ROWS UNBOUNDED PRECEDING"
 
         clauses = []
         if partitions:
             clauses.append(f"PARTITION BY {', '.join(partitions)}")
-        clauses.append(f"ORDER BY {order_expr} ROWS UNBOUNDED PRECEDING")
+        clauses.append(f"ORDER BY {order_expr} {frame}")
         return f"OVER ({' '.join(clauses)})"
+
+    def _effective_grain(self, time_dim: str, time_grain: str | None) -> str:
+        """The bucket size of the time axis: the query grain, else the dimension's own."""
+        if time_grain:
+            return time_grain
+        declared = self.registry.get_dimension(time_dim).time_granularity
+        return declared.value if declared else "day"
+
+    @staticmethod
+    def _trailing_frame(window: str, grain: str, metric_name: str) -> str:
+        """RANGE frame covering the last ``window`` ending at (and including) the current bucket."""
+        count, unit = parse_window(window)
+        if grain in TIME_UNITS and TIME_UNITS.index(unit) < TIME_UNITS.index(grain):
+            raise WindowGrainError(
+                f"Cumulative metric '{metric_name}' has a window of '{window}', finer than "
+                f"the query's '{grain}' grain; group by {unit} or coarser, or widen the window."
+            )
+        # Reason: RANGE PRECEDING includes its bound, so a window of N units that ends at the
+        # current bucket starts N units minus one bucket back (7 days by day = 6 days preceding)
+        return (
+            f"RANGE BETWEEN (INTERVAL {count} {unit.upper()} - INTERVAL 1 {grain.upper()}) "
+            "PRECEDING AND CURRENT ROW"
+        )
 
     def _build_measure_expr(self, measure: Measure, filter_expr: str | None = None) -> str:
         """Build SQL expression for a measure with optional filter."""

@@ -113,6 +113,14 @@ metrics:
       measure: order_amount
       grain_to_date: month
     filter: "status = 'completed'"
+
+  - name: trailing_revenue
+    description: "Revenue over the last two months"
+    type: cumulative
+    type_params:
+      measure: order_amount
+      window: 2 months
+    filter: "status = 'completed'"
 """
 
 

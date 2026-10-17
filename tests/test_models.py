@@ -9,6 +9,7 @@ from metricforge.models.metric import (
     Metric,
     RatioMetricParams,
     SimpleMetricParams,
+    parse_window,
 )
 from metricforge.models.query import MetricQuery, QueryResult
 from metricforge.models.semantic_model import (
@@ -194,10 +195,33 @@ class TestQueryResult:
         assert result.columns == ["revenue"]
 
 
-def test_cumulative_window_is_rejected():
-    with pytest.raises(ValueError, match="window"):
-        Metric(
-            name="revenue_7d",
+class TestCumulativeWindow:
+    def _metric(self, **params: str) -> Metric:
+        return Metric(
+            name="revenue_window",
             type="cumulative",
-            type_params=CumulativeMetricParams(measure="order_amount", window="7 days"),
+            type_params=CumulativeMetricParams(measure="order_amount", **params),
         )
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [("7 days", (7, "day")), ("1 month", (1, "month")), ("  2 Quarters ", (2, "quarter"))],
+    )
+    def test_parse_window(self, text: str, expected: tuple[int, str]):
+        assert parse_window(text) == expected
+
+    @pytest.mark.parametrize("text", ["days", "7", "7 fortnights", "0 days", "-1 day", "7d"])
+    def test_malformed_window_is_rejected(self, text: str):
+        with pytest.raises(ValueError, match="window"):
+            self._metric(window=text)
+
+    def test_window_and_grain_to_date_are_exclusive(self):
+        with pytest.raises(ValueError, match="not both"):
+            self._metric(window="7 days", grain_to_date="month")
+
+    def test_unknown_grain_to_date_is_rejected(self):
+        with pytest.raises(ValueError, match="grain_to_date"):
+            self._metric(grain_to_date="fortnight")
+
+    def test_valid_window_is_kept(self):
+        assert self._metric(window="7 days").type_params.window == "7 days"

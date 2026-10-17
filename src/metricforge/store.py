@@ -7,7 +7,9 @@ from typing import Any
 
 from metricforge.compiler.sql_builder import SQLCompiler
 from metricforge.executor.duckdb_executor import DuckDBExecutor
+from metricforge.models.metric import CumulativeMetricParams, Metric
 from metricforge.models.query import MetricQuery, QueryResult
+from metricforge.models.semantic_model import DimensionType
 from metricforge.parser.loader import MetricRegistry
 
 
@@ -153,11 +155,21 @@ class MetricStore:
         for metric in self.registry.metrics.values():
             try:
                 # compilation will fail if references are broken
-                self.compiler.compile(MetricQuery(metrics=[metric.name]))
+                query = MetricQuery(metrics=[metric.name], dimensions=self._time_axis_for(metric))
+                self.compiler.compile(query)
             except Exception as e:
                 errors.append(f"Metric '{metric.name}': {e}")
 
         return errors
+
+    def _time_axis_for(self, metric: Metric) -> list[str]:
+        """The time dimension a validation query needs: only a trailing window requires one."""
+        params = metric.type_params
+        if not isinstance(params, CumulativeMetricParams) or not params.window:
+            return []
+        model = self.registry.get_model_for_measure(params.measure)
+        time_dims = [d.name for d in model.dimensions if d.type == DimensionType.TIME]
+        return time_dims[:1]
 
     def _parse_date(self, value: str | date) -> date:
         """Parse ISO date string or return date object as-is."""
