@@ -1,7 +1,9 @@
 """Tests for CLI commands."""
 
+import json
 from pathlib import Path
 
+import duckdb
 import pytest
 from typer.testing import CliRunner
 
@@ -155,15 +157,89 @@ class TestCLIHelp:
         assert result.exit_code == 0
 
 
+def _result(rows: list[dict[str, object]]) -> QueryResult:
+    return QueryResult(
+        sql="SELECT 1",
+        columns=["country", "revenue"],
+        data=rows,
+        row_count=len(rows),
+        execution_time_ms=0.1,
+    )
+
+
+class TestJSONOutput:
+    def test_json_keeps_markup_like_values(self, capsys: pytest.CaptureFixture[str]):
+        """A value that looks like rich markup comes back unchanged from json.loads."""
+        _output_result(_result([{"country": "[red]x[/red]", "revenue": 1}]), "json")
+
+        assert json.loads(capsys.readouterr().out) == [{"country": "[red]x[/red]", "revenue": 1}]
+
+    def test_json_keeps_long_values_on_one_line(self, capsys: pytest.CaptureFixture[str]):
+        """A value wider than the console is not wrapped, so the output stays valid JSON."""
+        value = "x" * 120
+        _output_result(_result([{"country": value, "revenue": 1}]), "json")
+
+        assert json.loads(capsys.readouterr().out)[0]["country"] == value
+
+    def test_json_ends_with_a_newline(self, capsys: pytest.CaptureFixture[str]):
+        _output_result(_result([]), "json")
+
+        assert capsys.readouterr().out == "[]\n"
+
+
+class TestTableOutput:
+    def test_table_escapes_markup_in_values(self, capsys: pytest.CaptureFixture[str]):
+        """A value like "[red]x[/red]" is printed literally, not styled."""
+        _output_result(_result([{"country": "[red]x[/red]", "revenue": 1}]), "table")
+
+        assert "[red]x[/red]" in capsys.readouterr().out
+
+
+class TestSQLGoesToStderrForDataOutput:
+    @pytest.fixture
+    def db_path(self, tmp_path: Path, sample_orders_data: list[tuple]) -> str:
+        path = tmp_path / "orders.duckdb"
+        conn = duckdb.connect(str(path))
+        conn.execute(
+            "CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, amount DECIMAL(10, 2), "
+            "status VARCHAR, country VARCHAR, order_date DATE)"
+        )
+        conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?)", sample_orders_data)
+        conn.close()
+        return str(path)
+
+    def test_json_stdout_is_parseable_with_sql_shown(self, metrics_dir: Path, db_path: str):
+        result = runner.invoke(
+            app,
+            ["query", "revenue", "--dir", str(metrics_dir), "--db", db_path, "--sql", "-o", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)[0]["revenue"] is not None
+        assert "SELECT" in result.stderr.upper()
+
+    def test_csv_stdout_is_clean_with_sql_shown(self, metrics_dir: Path, db_path: str):
+        result = runner.invoke(
+            app,
+            ["query", "revenue", "--dir", str(metrics_dir), "--db", db_path, "--sql", "-o", "csv"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout.splitlines()[0] == "revenue"
+        assert "SELECT" in result.stderr.upper()
+
+    def test_table_output_keeps_sql_on_stdout(self, metrics_dir: Path, db_path: str):
+        result = runner.invoke(
+            app, ["query", "revenue", "--dir", str(metrics_dir), "--db", db_path, "--sql"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "SELECT" in result.stdout.upper()
+
+
 class TestCSVOutput:
     def _result(self, rows: list[dict[str, object]]) -> QueryResult:
-        return QueryResult(
-            sql="SELECT 1",
-            columns=["country", "revenue"],
-            data=rows,
-            row_count=len(rows),
-            execution_time_ms=0.1,
-        )
+        return _result(rows)
 
     def test_csv_escapes_commas_and_quotes(self, capsys: pytest.CaptureFixture[str]):
         """Values holding commas or quotes are quoted the way the csv module does it."""

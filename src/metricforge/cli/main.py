@@ -8,6 +8,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.syntax import Syntax
 from rich.table import Table
 
@@ -20,6 +21,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+error_console = Console(stderr=True)
 
 
 def get_store(metrics_dir: Path, db_path: str | None = None) -> MetricStore:
@@ -169,9 +171,10 @@ def query(
                 end_date=end_date,
                 limit=limit,
             )
-            syntax = Syntax(sql, "sql", theme="monokai", line_numbers=True)
-            console.print(syntax)
-            console.print()
+            # Reason: with csv/json output stdout is data, so the SQL goes to stderr
+            sql_console = console if output == "table" else error_console
+            sql_console.print(Syntax(sql, "sql", theme="monokai", line_numbers=True))
+            sql_console.print()
 
         result = store.query(
             metrics=metric_list,
@@ -197,7 +200,9 @@ def _csv_cell(value: object) -> str:
 def _output_result(result: QueryResult, output_format: str) -> None:
     """Output query result in the specified format."""
     if output_format == "json":
-        console.print(json.dumps(result.data, indent=2, default=str))
+        # Reason: written straight to stdout, not through rich, so long values are not
+        # wrapped at the console width and nothing is read as console markup
+        sys.stdout.write(json.dumps(result.data, indent=2, default=str) + "\n")
     elif output_format == "csv":
         # Reason: written straight to stdout, not through rich, so commas and quotes in
         # values are escaped and nothing in the data is read as console markup
@@ -213,8 +218,8 @@ def _output_result(result: QueryResult, output_format: str) -> None:
             table.add_column(col)
 
         for row in result.data:
-            values = [str(row.get(c, "")) for c in result.columns]
-            table.add_row(*values)
+            # Reason: a value like "[red]" is data, not rich markup
+            table.add_row(*(escape(str(row.get(c, ""))) for c in result.columns))
 
         console.print(table)
 
