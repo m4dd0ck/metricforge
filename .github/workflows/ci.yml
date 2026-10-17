@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -19,13 +23,13 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked
 
-      - name: Run linter
-        run: uv run ruff check src/ tests/
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy src
 
-      - name: Run type checker
-        run: uv run mypy src
-
-      - name: Run tests
-        run: uv run pytest tests/ -v --tb=short
+      - name: Tests
+        run: uv run pytest
