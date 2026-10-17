@@ -138,7 +138,6 @@ class MetricRegistry:
                             f"Derived metric '{metric_name}' references unknown "
                             f"metric '{ref_metric}'"
                         )
-                # TODO: circular dependency check
 
             elif metric.type == "ratio":
                 params = metric.type_params
@@ -164,6 +163,38 @@ class MetricRegistry:
                         f"Cumulative metric '{metric_name}' references unknown "
                         f"measure '{params.measure}'"
                     )
+
+        self._reject_circular_references()
+
+    def _referenced_metrics(self, metric: Metric) -> list[str]:
+        """Names of the metrics a derived or ratio metric is computed from."""
+        params = metric.type_params
+        if isinstance(params, DerivedMetricParams):
+            return list(params.metrics)
+        if isinstance(params, RatioMetricParams):
+            return [params.numerator, params.denominator]
+        return []
+
+    def _reject_circular_references(self) -> None:
+        """Raise if derived or ratio metrics reference each other in a cycle.
+
+        Reason: the compiler resolves sub-metrics recursively, so a cycle would
+        only surface as a RecursionError at query time.
+        """
+        done: set[str] = set()
+
+        def visit(name: str, path: list[str]) -> None:
+            if name in path:
+                cycle = " -> ".join([*path[path.index(name) :], name])
+                raise ValueError(f"Circular metric reference: {cycle}")
+            if name in done:
+                return
+            for ref in self._referenced_metrics(self.metrics[name]):
+                visit(ref, [*path, name])
+            done.add(name)
+
+        for metric_name in self.metrics:
+            visit(metric_name, [])
 
     def get_metric(self, name: str) -> Metric:
         if name not in self.metrics:

@@ -194,6 +194,75 @@ metrics:
         with pytest.raises(ValueError, match="references unknown metric"):
             registry.load_directory(metrics_path)
 
+    def test_self_referencing_derived_metric_raises(self, tmp_path: Path):
+        """A derived metric that lists itself is rejected at load time, not at query time."""
+        metrics_path = tmp_path / "metrics"
+        metrics_path.mkdir()
+        (metrics_path / "test.yaml").write_text(
+            CYCLE_YAML_HEAD
+            + """
+  - name: aov
+    type: derived
+    type_params:
+      expr: "aov / revenue"
+      metrics:
+        - aov
+        - revenue
+"""
+        )
+
+        registry = MetricRegistry()
+        with pytest.raises(ValueError, match="Circular metric reference: aov -> aov"):
+            registry.load_directory(metrics_path)
+
+    def test_derived_and_ratio_cycle_raises(self, tmp_path: Path):
+        """A cycle through a derived and a ratio metric names the loop."""
+        metrics_path = tmp_path / "metrics"
+        metrics_path.mkdir()
+        (metrics_path / "test.yaml").write_text(
+            CYCLE_YAML_HEAD
+            + """
+  - name: a
+    type: derived
+    type_params:
+      expr: "b * 2"
+      metrics:
+        - b
+
+  - name: b
+    type: ratio
+    type_params:
+      numerator: a
+      denominator: revenue
+"""
+        )
+
+        registry = MetricRegistry()
+        with pytest.raises(ValueError, match="Circular metric reference: a -> b -> a"):
+            registry.load_directory(metrics_path)
+
+    def test_shared_sub_metric_is_not_a_cycle(self, registry: MetricRegistry):
+        """The sample set reuses `revenue` and `completed_orders`; that loads fine."""
+        assert "average_order_value" in registry.metrics
+        assert "order_completion_rate" in registry.metrics
+
+
+CYCLE_YAML_HEAD = """
+semantic_models:
+  - name: orders
+    table: orders
+    primary_entity: order_id
+    measures:
+      - name: order_amount
+        agg: sum
+        expr: amount
+
+metrics:
+  - name: revenue
+    type: simple
+    type_params:
+      measure: order_amount
+"""
 
 SHARED_DIMENSION_YAML = """
 semantic_models:
