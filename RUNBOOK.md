@@ -34,8 +34,7 @@ before trusting a new metric definition.
 
 ## Release
 
-Follows `~/developer/hq/CONVENTIONS.md` §Versioning. The consumers pin this repo by tag, so a
-release is not done until their pins move.
+The consumers pin this repo by tag, so a release is not done until their pins move.
 
 1. Bump `version` in `pyproject.toml` and `__version__` in `src/metricforge/__init__.py`,
    then `uv lock` (CI installs with `--locked`).
@@ -55,5 +54,4 @@ release is not done until their pins move.
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
 uv run pytest
 uv run mf validate --dir metrics/
-python3 ~/.claude/scripts/doc-check.py --repo .
 ```

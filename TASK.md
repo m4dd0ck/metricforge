@@ -1,7 +1,6 @@
 # Tasks
 
-Single-repo status. Last reviewed **2026-10-20**. Cross-repo items are in
-`~/developer/hq/OPEN_ITEMS.md`; the consumers' pinned tag is in `~/developer/hq/repos.json`.
+Single-repo status, kept by hand. Last reviewed **2026-10-20**.
 
 ## Needs the owner
 

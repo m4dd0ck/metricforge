@@ -31,7 +31,6 @@ cd metricforge
 
 # Install with uv
 uv sync
-uv pip install -e .
 ```
 
 ### 1. Generate sample data
@@ -306,7 +305,7 @@ examples/            # Usage examples
 
 | Thing | Where | Notes |
 |---|---|---|
-| Consumers | `revenue-monitor` and `metric-helpdesk` under `~/developer/portfolio/` | both install this repo from a git tag; a release here is followed by bumping both pins (`~/developer/hq/CONVENTIONS.md` §Versioning) |
+| Consumers | [revenue-monitor](https://github.com/m4dd0ck/revenue-monitor) and [metric-helpdesk](https://github.com/m4dd0ck/metric-helpdesk) | both install this repo from a git tag; a release here is followed by bumping both pins (`RUNBOOK.md` §Release) |
 
 ## Development
 
@@ -322,4 +321,3 @@ CI runs the same. Licensed MIT (`LICENSE`).
 - `RUNBOOK.md`: run, release (with the consumer pins), restore.
 - `CLAUDE.md`: the agent rules.
 - `TASK.md`: what is open.
-- `~/developer/hq/CONVENTIONS.md`: the portfolio release and commit rules.
